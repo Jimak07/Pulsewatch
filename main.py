@@ -1,12 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 from urllib.parse import urlparse
+import bcrypt
+import jwt
+from typing import Optional
+
+SECRET_KEY = "pulsewatch-multi-tenant-jwt-secret-key-32-chars-long"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 app = FastAPI()
 
@@ -18,6 +26,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+security = HTTPBearer()
+
+class UserAuth(BaseModel):
+    username: str
+    password: str
+
 class ServerCreate(BaseModel):
     hostname: str
     server_role: str
@@ -25,6 +39,46 @@ class ServerCreate(BaseModel):
 
 class ServerUpdate(BaseModel):
     is_active: int
+
+def hash_password(password: str) -> str:
+    pwd_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try:
+        pwd_bytes = plain_password.encode("utf-8")[:72]
+        return bcrypt.checkpw(pwd_bytes, hashed_password.encode("utf-8"))
+    except Exception:
+        return False
+
+def create_access_token(user_id: int, username: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    payload = {
+        "user_id": user_id,
+        "sub": username,
+        "exp": expire
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> int:
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = payload.get("user_id")
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        return user_id
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
 def get_db_connection():
     connection = sqlite3.connect("database.db", timeout=30)
@@ -37,13 +91,25 @@ def init_db():
     
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+        """
+    )
+    
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS Server (
             server_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             hostname TEXT NOT NULL,
             server_role TEXT NOT NULL,
             target_address TEXT NOT NULL,
             active_connections INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1
+            is_active INTEGER DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
         """
     )
@@ -86,6 +152,11 @@ def init_db():
         """
     )
     
+    cursor.execute("PRAGMA table_info(Server)")
+    server_columns = [row[1] for row in cursor.fetchall()]
+    if "user_id" not in server_columns:
+        cursor.execute("ALTER TABLE Server ADD COLUMN user_id INTEGER DEFAULT 1")
+        
     cursor.execute("PRAGMA table_info(HealthChecks)")
     columns = [row[1] for row in cursor.fetchall()]
     if "cpu_usage" not in columns:
@@ -93,12 +164,58 @@ def init_db():
     if "ram_usage" not in columns:
         cursor.execute("ALTER TABLE HealthChecks ADD COLUMN ram_usage REAL")
     
+    cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+    admin_row = cursor.fetchone()
+    default_pwd = hash_password("admin123")
+    if not admin_row:
+        cursor.execute("INSERT INTO users (id, username, password_hash) VALUES (1, 'admin', ?)", (default_pwd,))
+    else:
+        cursor.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (default_pwd,))
+    
+    cursor.execute("UPDATE Server SET user_id = 1 WHERE user_id IS NULL")
     cursor.execute("INSERT OR IGNORE INTO metrics_raw SELECT * FROM HealthChecks")
     
     connection.commit()
     connection.close()
 
 init_db()
+
+@app.post("/register")
+def register(auth: UserAuth):
+    clean_username = auth.username.strip()
+    if not clean_username or not auth.password:
+        raise HTTPException(status_code=400, detail="Username and password cannot be empty")
+    
+    hashed = hash_password(auth.password)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (clean_username, hashed))
+        user_id = cursor.lastrowid
+        connection.commit()
+    except sqlite3.IntegrityError:
+        connection.close()
+        raise HTTPException(status_code=400, detail="Username already exists")
+        
+    connection.close()
+    token = create_access_token(user_id, clean_username)
+    return {"access_token": token, "token_type": "bearer", "user_id": user_id, "username": clean_username}
+
+@app.post("/login")
+def login(auth: UserAuth):
+    clean_username = auth.username.strip()
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT id, password_hash FROM users WHERE username = ?", (clean_username,))
+    row = cursor.fetchone()
+    connection.close()
+    
+    if not row or not verify_password(auth.password, row[1]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+        
+    user_id = row[0]
+    token = create_access_token(user_id, clean_username)
+    return {"access_token": token, "token_type": "bearer", "user_id": user_id, "username": clean_username}
 
 @app.get("/install.sh")
 def get_install_script():
@@ -109,25 +226,25 @@ def get_metric_agent():
     return FileResponse("metric_agent.py", media_type="text/x-python")
 
 @app.get("/servers")
-def get_servers():
+def get_servers(current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     connection.row_factory = sqlite3.Row
     cursor = connection.cursor()
     
-    cursor.execute("SELECT * FROM Server")
+    cursor.execute("SELECT * FROM Server WHERE user_id = ?", (current_user_id,))
     servers = [dict(row) for row in cursor.fetchall()]
     
     connection.close()
     return servers
 
 @app.post("/servers")
-def add_server(server: ServerCreate):
+def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
     
     cursor.execute(
-        "INSERT INTO Server (hostname, server_role, target_address) VALUES (?, ?, ?)",
-        (server.hostname, server.server_role, server.target_address)
+        "INSERT INTO Server (user_id, hostname, server_role, target_address) VALUES (?, ?, ?, ?)",
+        (current_user_id, server.hostname, server.server_role, server.target_address)
     )
     
     connection.commit()
@@ -135,13 +252,18 @@ def add_server(server: ServerCreate):
     return {"message": "Server added"}
 
 @app.put("/servers/{server_id}")
-def update_server(server_id: int, server: ServerUpdate):
+def update_server(server_id: int, server: ServerUpdate, current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
     
+    cursor.execute("SELECT server_id FROM Server WHERE server_id = ? AND user_id = ?", (server_id, current_user_id))
+    if not cursor.fetchone():
+        connection.close()
+        raise HTTPException(status_code=404, detail="Server not found")
+    
     cursor.execute(
-        "UPDATE Server SET is_active = ? WHERE server_id = ?",
-        (server.is_active, server_id)
+        "UPDATE Server SET is_active = ? WHERE server_id = ? AND user_id = ?",
+        (server.is_active, server_id, current_user_id)
     )
     
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -159,22 +281,33 @@ def update_server(server_id: int, server: ServerUpdate):
     return {"message": "Server updated"}
 
 @app.delete("/servers/{server_id}")
-def delete_server(server_id: int):
+def delete_server(server_id: int, current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
+    
+    cursor.execute("SELECT server_id FROM Server WHERE server_id = ? AND user_id = ?", (server_id, current_user_id))
+    if not cursor.fetchone():
+        connection.close()
+        raise HTTPException(status_code=404, detail="Server not found")
+        
     cursor.execute("DELETE FROM HealthChecks WHERE server_id = ?", (server_id,))
     cursor.execute("DELETE FROM metrics_raw WHERE server_id = ?", (server_id,))
     cursor.execute("DELETE FROM metrics_hourly WHERE server_id = ?", (server_id,))
-    cursor.execute("DELETE FROM Server WHERE server_id = ?", (server_id,))
+    cursor.execute("DELETE FROM Server WHERE server_id = ? AND user_id = ?", (server_id, current_user_id))
     connection.commit()
     connection.close()
     return {"message": "Server deleted"}
 
 @app.get("/servers/{server_id}/history")
-def get_server_history(server_id: int, hours: int = 1):
+def get_server_history(server_id: int, hours: int = 1, current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
     
+    cursor.execute("SELECT server_id FROM Server WHERE server_id = ? AND user_id = ?", (server_id, current_user_id))
+    if not cursor.fetchone():
+        connection.close()
+        raise HTTPException(status_code=404, detail="Server not found")
+        
     cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     
     cursor.execute(
@@ -200,10 +333,15 @@ def get_server_history(server_id: int, hours: int = 1):
     return history
 
 @app.get("/servers/{server_id}/logs")
-def get_server_logs(server_id: int, status: int, limit: int = 50):
+def get_server_logs(server_id: int, status: int, limit: int = 50, current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
     
+    cursor.execute("SELECT server_id FROM Server WHERE server_id = ? AND user_id = ?", (server_id, current_user_id))
+    if not cursor.fetchone():
+        connection.close()
+        raise HTTPException(status_code=404, detail="Server not found")
+        
     cursor.execute(
         """
         SELECT status, timestamp 
@@ -226,10 +364,15 @@ def get_server_logs(server_id: int, status: int, limit: int = 50):
     return logs
 
 @app.get("/servers/{server_id}/uptime")
-def get_uptime_matrix(server_id: int):
+def get_uptime_matrix(server_id: int, current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
     
+    cursor.execute("SELECT server_id FROM Server WHERE server_id = ? AND user_id = ?", (server_id, current_user_id))
+    if not cursor.fetchone():
+        connection.close()
+        raise HTTPException(status_code=404, detail="Server not found")
+        
     now = datetime.now(timezone.utc)
     
     timeframes = {
@@ -263,20 +406,20 @@ def get_uptime_matrix(server_id: int):
     return matrix
 
 @app.get("/system/retention-stats")
-def get_retention_stats():
+def get_retention_stats(current_user_id: int = Depends(get_current_user)):
     connection = get_db_connection()
     cursor = connection.cursor()
     
-    cursor.execute("SELECT COUNT(*) FROM metrics_raw")
+    cursor.execute("SELECT COUNT(*) FROM metrics_raw WHERE server_id IN (SELECT server_id FROM Server WHERE user_id = ?)", (current_user_id,))
     raw_count = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(*) FROM metrics_hourly")
+    cursor.execute("SELECT COUNT(*) FROM metrics_hourly WHERE server_id IN (SELECT server_id FROM Server WHERE user_id = ?)", (current_user_id,))
     hourly_count = cursor.fetchone()[0]
     
-    cursor.execute("SELECT MIN(timestamp) FROM metrics_raw")
+    cursor.execute("SELECT MIN(timestamp) FROM metrics_raw WHERE server_id IN (SELECT server_id FROM Server WHERE user_id = ?)", (current_user_id,))
     oldest_raw = cursor.fetchone()[0]
     
-    cursor.execute("SELECT MIN(timestamp) FROM metrics_hourly")
+    cursor.execute("SELECT MIN(timestamp) FROM metrics_hourly WHERE server_id IN (SELECT server_id FROM Server WHERE user_id = ?)", (current_user_id,))
     oldest_hourly = cursor.fetchone()[0]
     
     connection.close()
@@ -292,7 +435,7 @@ def get_retention_stats():
     }
 
 @app.post("/system/trigger-rollup")
-def trigger_rollup():
+def trigger_rollup(current_user_id: int = Depends(get_current_user)):
     process_historical_data()
     return {"message": "Historical rollup and purge executed successfully"}
 

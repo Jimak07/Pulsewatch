@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { useState, useEffect, useMemo, createContext, useContext } from 'react';
+import { BrowserRouter, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid } from 'recharts';
 
 const getApiBase = () => {
@@ -8,6 +8,189 @@ const getApiBase = () => {
   }
   return 'http://localhost:8000';
 };
+
+const AuthContext = createContext();
+
+export const useAuth = () => useContext(AuthContext);
+
+export function AuthProvider({ children }) {
+  const [token, setToken] = useState(() => localStorage.getItem('pulsewatch_token'));
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('pulsewatch_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  const login = async (username, password) => {
+    const apiBase = getApiBase();
+    const cleanUser = (username || '').trim();
+    const res = await fetch(`${apiBase}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: cleanUser, password })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || 'Login failed');
+    }
+    const data = await res.json();
+    setToken(data.access_token);
+    setUser({ user_id: data.user_id, username: data.username });
+    localStorage.setItem('pulsewatch_token', data.access_token);
+    localStorage.setItem('pulsewatch_user', JSON.stringify({ user_id: data.user_id, username: data.username }));
+    return data;
+  };
+
+  const register = async (username, password) => {
+    const apiBase = getApiBase();
+    const cleanUser = (username || '').trim();
+    const res = await fetch(`${apiBase}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: cleanUser, password })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || 'Registration failed');
+    }
+    const data = await res.json();
+    setToken(data.access_token);
+    setUser({ user_id: data.user_id, username: data.username });
+    localStorage.setItem('pulsewatch_token', data.access_token);
+    localStorage.setItem('pulsewatch_user', JSON.stringify({ user_id: data.user_id, username: data.username }));
+    return data;
+  };
+
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem('pulsewatch_token');
+    localStorage.removeItem('pulsewatch_user');
+  };
+
+  const authFetch = async (url, options = {}) => {
+    const headers = {
+      ...(options.headers || {}),
+      'Authorization': `Bearer ${token}`
+    };
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      logout();
+    }
+    return res;
+  };
+
+  return (
+    <AuthContext.Provider value={{ token, user, login, register, logout, authFetch }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+function AuthScreen() {
+  const [isRegister, setIsRegister] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { login, register } = useAuth();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      if (isRegister) {
+        await register(username, password);
+      } else {
+        await login(username, password);
+      }
+    } catch (err) {
+      setError(err.message || 'Authentication error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 font-mono text-white">
+      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-8 space-y-6">
+        <div className="text-center space-y-2">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 text-2xl mb-2">
+            ⚡
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight text-white">PulseWatch</h1>
+          <p className="text-sm text-slate-400">Multi-Tenant Infrastructure Monitoring</p>
+        </div>
+
+        <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <button
+            type="button"
+            onClick={() => { setIsRegister(false); setError(''); }}
+            className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
+              !isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Sign In
+          </button>
+          <button
+            type="button"
+            onClick={() => { setIsRegister(true); setError(''); }}
+            className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
+              isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Register
+          </button>
+        </div>
+
+        {error && (
+          <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-4 py-3 rounded-xl text-sm flex items-center space-x-2">
+            <span>⚠️</span>
+            <span className="flex-1">{error}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Username</label>
+            <input
+              type="text"
+              required
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="e.g. admin or devops"
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Password</label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition-colors shadow-lg shadow-blue-600/30"
+          >
+            {loading ? 'Authenticating...' : isRegister ? 'Create Tenant Account' : 'Sign In to Dashboard'}
+          </button>
+        </form>
+
+        <div className="pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
+          Default admin: <span className="text-slate-300 font-mono">admin</span> / <span className="text-slate-300 font-mono">admin123</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const formatHistoryData = (rawData, requestedStartTime) => {
   if (!rawData || rawData.length === 0) return [];
@@ -126,12 +309,15 @@ function ServerCard({ server, onDelete }) {
   const endTime = new Date().getTime();
   const startTime = endTime - 3600000;
   const apiBase = getApiBase();
+  const { authFetch } = useAuth();
 
   useEffect(() => {
-    fetch(`${apiBase}/servers/${server.server_id}/history`)
+    authFetch(`${apiBase}/servers/${server.server_id}/history`)
       .then(res => res.json())
       .then(data => {
-        setHistory(formatHistoryData(data, startTime));
+        if (Array.isArray(data)) {
+          setHistory(formatHistoryData(data, startTime));
+        }
       })
       .catch(err => console.error(err));
   }, [server.server_id, server.is_active, apiBase]);
@@ -224,11 +410,12 @@ function Dashboard() {
   const [copied, setCopied] = useState(false);
 
   const apiBase = getApiBase();
+  const { authFetch } = useAuth();
   const currentHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
   const installCmd = `curl -fsSL http://${currentHost}:8000/install.sh | bash -s http://${currentHost}:8000/agent/metric_agent.py`;
 
   const fetchServers = () => {
-    fetch(`${apiBase}/servers`)
+    authFetch(`${apiBase}/servers`)
       .then(response => response.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -250,7 +437,7 @@ function Dashboard() {
     e.preventDefault();
     const newServer = { hostname, server_role: serverRole, target_address: targetAddress };
 
-    fetch(`${apiBase}/servers`, {
+    authFetch(`${apiBase}/servers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newServer),
@@ -268,7 +455,7 @@ function Dashboard() {
   const deleteServer = async (serverId) => {
     setServers(prevServers => prevServers.filter(s => String(s.server_id) !== String(serverId)));
     try {
-      const response = await fetch(`${apiBase}/servers/${serverId}`, {
+      const response = await authFetch(`${apiBase}/servers/${serverId}`, {
         method: 'DELETE',
       });
       if (!response.ok) {
@@ -374,18 +561,19 @@ function Analytics() {
   const [rollupFeedback, setRollupFeedback] = useState("");
 
   const apiBase = getApiBase();
+  const { authFetch } = useAuth();
   const endTime = new Date().getTime();
   const startTime = endTime - (graphHours * 3600000);
 
   const fetchRetentionStats = () => {
-    fetch(`${apiBase}/system/retention-stats`)
+    authFetch(`${apiBase}/system/retention-stats`)
       .then(res => res.json())
       .then(data => setRetentionStats(data))
       .catch(err => console.error(err));
   };
 
   useEffect(() => {
-    fetch(`${apiBase}/servers`)
+    authFetch(`${apiBase}/servers`)
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -403,17 +591,17 @@ function Analytics() {
   useEffect(() => {
     if (!selectedServer) return;
 
-    fetch(`${apiBase}/servers/${selectedServer}/uptime`)
+    authFetch(`${apiBase}/servers/${selectedServer}/uptime`)
       .then(res => res.json())
       .then(data => setMatrix(data))
       .catch(err => console.error(err));
 
-    fetch(`${apiBase}/servers/${selectedServer}/logs?status=0&limit=10`)
+    authFetch(`${apiBase}/servers/${selectedServer}/logs?status=0&limit=10`)
       .then(res => res.json())
       .then(data => setDowntimeLogs(data))
       .catch(err => console.error(err));
 
-    fetch(`${apiBase}/servers/${selectedServer}/logs?status=1&limit=10`)
+    authFetch(`${apiBase}/servers/${selectedServer}/logs?status=1&limit=10`)
       .then(res => res.json())
       .then(data => setUptimeLogs(data))
       .catch(err => console.error(err));
@@ -422,10 +610,12 @@ function Analytics() {
   useEffect(() => {
     if (!selectedServer) return;
 
-    fetch(`${apiBase}/servers/${selectedServer}/history?hours=${graphHours}`)
+    authFetch(`${apiBase}/servers/${selectedServer}/history?hours=${graphHours}`)
       .then(res => res.json())
       .then(data => {
-        setGraphData(formatHistoryData(data, startTime));
+        if (Array.isArray(data)) {
+          setGraphData(formatHistoryData(data, startTime));
+        }
       })
       .catch(err => console.error(err));
   }, [selectedServer, graphHours, apiBase]);
@@ -434,7 +624,7 @@ function Analytics() {
     setIsRollupRunning(true);
     setRollupFeedback("");
     try {
-      const res = await fetch(`${apiBase}/system/trigger-rollup`, { method: 'POST' });
+      const res = await authFetch(`${apiBase}/system/trigger-rollup`, { method: 'POST' });
       const data = await res.json();
       setRollupFeedback(data.message || "Rollup executed");
       fetchRetentionStats();
@@ -817,6 +1007,7 @@ function Analytics() {
 function Layout({ children }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const location = useLocation();
+  const { user, logout } = useAuth();
 
   const getPageTitle = () => {
     if (location.pathname === "/analytics") return "System Analytics";
@@ -836,7 +1027,7 @@ function Layout({ children }) {
               ✕
             </button>
           </div>
-          <nav className="px-4 mt-6 space-y-2">
+          <nav className="px-4 mt-6 space-y-2 flex-grow">
             <Link 
               to="/" 
               className={`block px-4 py-3 rounded-lg transition-colors ${location.pathname === "/" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-700 hover:text-white"}`}
@@ -850,6 +1041,13 @@ function Layout({ children }) {
               Analytics
             </Link>
           </nav>
+          
+          {user && (
+            <div className="p-4 m-4 bg-slate-900/60 rounded-xl border border-slate-700/60">
+              <div className="text-xs text-slate-400 mb-1">Signed in as</div>
+              <div className="font-semibold text-blue-400 truncate">{user.username}</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -858,14 +1056,31 @@ function Layout({ children }) {
       )}
 
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
-        <header className="bg-slate-800/50 border-b border-slate-700 p-4 flex items-center sticky top-0 z-10">
-          <button 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-            className="mr-4 text-slate-400 hover:text-white text-2xl transition-colors"
-          >
-            ☰
-          </button>
-          <h2 className="text-xl font-semibold text-slate-200">{getPageTitle()}</h2>
+        <header className="bg-slate-800/50 border-b border-slate-700 p-4 flex items-center justify-between sticky top-0 z-10">
+          <div className="flex items-center">
+            <button 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+              className="mr-4 text-slate-400 hover:text-white text-2xl transition-colors"
+            >
+              ☰
+            </button>
+            <h2 className="text-xl font-semibold text-slate-200">{getPageTitle()}</h2>
+          </div>
+          
+          <div className="flex items-center space-x-3">
+            {user && (
+              <span className="hidden sm:inline-block text-xs bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-full text-slate-300">
+                👤 <strong className="text-blue-400">{user.username}</strong>
+              </span>
+            )}
+            <button
+              onClick={logout}
+              className="text-xs bg-red-950/60 hover:bg-red-600 border border-red-800/80 hover:border-red-500 text-red-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-semibold"
+              title="Sign Out"
+            >
+              Sign Out
+            </button>
+          </div>
         </header>
         
         <main className="p-6 md:p-8">
@@ -876,15 +1091,30 @@ function Layout({ children }) {
   );
 }
 
+function ProtectedApp() {
+  const { token } = useAuth();
+
+  if (!token) {
+    return <AuthScreen />;
+  }
+
+  return (
+    <Layout>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/analytics" element={<Analytics />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Layout>
+  );
+}
+
 function App() {
   return (
     <BrowserRouter>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/analytics" element={<Analytics />} />
-        </Routes>
-      </Layout>
+      <AuthProvider>
+        <ProtectedApp />
+      </AuthProvider>
     </BrowserRouter>
   );
 }
