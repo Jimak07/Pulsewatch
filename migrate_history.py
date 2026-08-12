@@ -5,7 +5,6 @@ def create_healthchecks_table():
     cursor = connection.cursor()
 
     try:
-        # Create the new table for historical logs
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS HealthChecks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

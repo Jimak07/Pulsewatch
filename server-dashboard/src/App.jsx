@@ -2,6 +2,13 @@ import { useState, useEffect, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid } from 'recharts';
 
+const getApiBase = () => {
+  if (typeof window !== 'undefined' && window.location.hostname) {
+    return `http://${window.location.hostname}:8000`;
+  }
+  return 'http://localhost:8000';
+};
+
 const formatHistoryData = (rawData, requestedStartTime) => {
   if (!rawData || rawData.length === 0) return [];
   const reversed = [...rawData].reverse();
@@ -114,27 +121,41 @@ const generateGradientStops = (data, onlineColor) => {
   return stops;
 };
 
-function ServerCard({ server }) {
+function ServerCard({ server, onDelete }) {
   const [history, setHistory] = useState([]);
   const endTime = new Date().getTime();
   const startTime = endTime - 3600000;
+  const apiBase = getApiBase();
 
   useEffect(() => {
-    fetch(`http://localhost:8000/servers/${server.server_id}/history`)
+    fetch(`${apiBase}/servers/${server.server_id}/history`)
       .then(res => res.json())
       .then(data => {
         setHistory(formatHistoryData(data, startTime));
       })
       .catch(err => console.error(err));
-  }, [server.server_id, server.is_active]);
+  }, [server.server_id, server.is_active, apiBase]);
 
   return (
     <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg transition-all hover:border-slate-500 flex flex-col h-full">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-2xl font-semibold text-blue-400">{server.hostname}</h2>
-        <span className="text-2xl select-none" title={server.is_active ? 'Online' : 'Offline'}>
-          {server.is_active ? '🟢' : '🔴'}
-        </span>
+        <h2 className="text-2xl font-semibold text-blue-400 truncate pr-2">{server.hostname}</h2>
+        <div className="flex items-center space-x-3 shrink-0">
+          <span className="text-2xl select-none" title={server.is_active ? 'Online' : 'Offline'}>
+            {server.is_active ? '🟢' : '🔴'}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(server.server_id);
+            }}
+            className="text-xs bg-red-950/60 hover:bg-red-600 border border-red-800/80 hover:border-red-500 text-red-300 hover:text-white px-2.5 py-1 rounded transition-colors"
+            title="Delete Server"
+          >
+            Delete
+          </button>
+        </div>
       </div>
       
       <div className="space-y-2 text-slate-300 mb-4 flex-grow">
@@ -202,8 +223,20 @@ function Dashboard() {
   const [targetAddress, setTargetAddress] = useState("");
   const [copied, setCopied] = useState(false);
 
+  const apiBase = getApiBase();
   const currentHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
   const installCmd = `curl -fsSL http://${currentHost}:8000/install.sh | bash -s http://${currentHost}:8000/agent/metric_agent.py`;
+
+  const fetchServers = () => {
+    fetch(`${apiBase}/servers`)
+      .then(response => response.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setServers(data);
+        }
+      })
+      .catch(error => console.error(error));
+  };
 
   useEffect(() => {
     fetchServers();
@@ -211,20 +244,13 @@ function Dashboard() {
       fetchServers();
     }, 5000);
     return () => clearInterval(intervalId);
-  }, []);
-
-  const fetchServers = () => {
-    fetch('http://localhost:8000/servers')
-      .then(response => response.json())
-      .then(data => setServers(data))
-      .catch(error => console.error(error));
-  };
+  }, [apiBase]);
 
   const handleAddServer = (e) => {
     e.preventDefault();
     const newServer = { hostname, server_role: serverRole, target_address: targetAddress };
 
-    fetch('http://localhost:8000/servers', {
+    fetch(`${apiBase}/servers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newServer),
@@ -237,6 +263,21 @@ function Dashboard() {
       fetchServers();
     })
     .catch(error => console.error(error));
+  };
+
+  const deleteServer = async (serverId) => {
+    setServers(prevServers => prevServers.filter(s => String(s.server_id) !== String(serverId)));
+    try {
+      const response = await fetch(`${apiBase}/servers/${serverId}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        fetchServers();
+      }
+    } catch (error) {
+      console.error(error);
+      fetchServers();
+    }
   };
 
   const handleCopyCommand = () => {
@@ -311,7 +352,7 @@ function Dashboard() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {servers.map((server) => (
-          <ServerCard key={server.server_id} server={server} />
+          <ServerCard key={server.server_id} server={server} onDelete={deleteServer} />
         ))}
       </div>
     </div>
@@ -329,50 +370,53 @@ function Analytics() {
   const [isCpuOpen, setIsCpuOpen] = useState(true);
   const [isRamOpen, setIsRamOpen] = useState(true);
 
+  const apiBase = getApiBase();
   const endTime = new Date().getTime();
   const startTime = endTime - (graphHours * 3600000);
 
   useEffect(() => {
-    fetch('http://localhost:8000/servers')
+    fetch(`${apiBase}/servers`)
       .then(res => res.json())
       .then(data => {
-        setServers(data);
-        if (data.length > 0) {
-          setSelectedServer(data[0].server_id);
+        if (Array.isArray(data)) {
+          setServers(data);
+          if (data.length > 0) {
+            setSelectedServer(data[0].server_id);
+          }
         }
       })
       .catch(err => console.error(err));
-  }, []);
+  }, [apiBase]);
 
   useEffect(() => {
     if (!selectedServer) return;
 
-    fetch(`http://localhost:8000/servers/${selectedServer}/uptime`)
+    fetch(`${apiBase}/servers/${selectedServer}/uptime`)
       .then(res => res.json())
       .then(data => setMatrix(data))
       .catch(err => console.error(err));
 
-    fetch(`http://localhost:8000/servers/${selectedServer}/logs?status=0&limit=10`)
+    fetch(`${apiBase}/servers/${selectedServer}/logs?status=0&limit=10`)
       .then(res => res.json())
       .then(data => setDowntimeLogs(data))
       .catch(err => console.error(err));
 
-    fetch(`http://localhost:8000/servers/${selectedServer}/logs?status=1&limit=10`)
+    fetch(`${apiBase}/servers/${selectedServer}/logs?status=1&limit=10`)
       .then(res => res.json())
       .then(data => setUptimeLogs(data))
       .catch(err => console.error(err));
-  }, [selectedServer]);
+  }, [selectedServer, apiBase]);
 
   useEffect(() => {
     if (!selectedServer) return;
 
-    fetch(`http://localhost:8000/servers/${selectedServer}/history?hours=${graphHours}`)
+    fetch(`${apiBase}/servers/${selectedServer}/history?hours=${graphHours}`)
       .then(res => res.json())
       .then(data => {
         setGraphData(formatHistoryData(data, startTime));
       })
       .catch(err => console.error(err));
-  }, [selectedServer, graphHours]);
+  }, [selectedServer, graphHours, apiBase]);
 
   const latestMetrics = useMemo(() => {
     if (!graphData || graphData.length === 0) return { cpu: null, ram: null };

@@ -127,6 +127,16 @@ def update_server(server_id: int, server: ServerUpdate):
     connection.close()
     return {"message": "Server updated"}
 
+@app.delete("/servers/{server_id}")
+def delete_server(server_id: int):
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("DELETE FROM HealthChecks WHERE server_id = ?", (server_id,))
+    cursor.execute("DELETE FROM Server WHERE server_id = ?", (server_id,))
+    connection.commit()
+    connection.close()
+    return {"message": "Server deleted"}
+
 @app.get("/servers/{server_id}/history")
 def get_server_history(server_id: int, hours: int = 1):
     connection = get_db_connection()
