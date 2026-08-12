@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-ssr
+__pycache__
+*.pyc
+*.db
+*.db-journal
+*.log
+.DS_Store
+.env
