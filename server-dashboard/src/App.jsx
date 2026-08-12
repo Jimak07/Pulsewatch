@@ -369,10 +369,20 @@ function Analytics() {
   const [graphData, setGraphData] = useState([]);
   const [isCpuOpen, setIsCpuOpen] = useState(true);
   const [isRamOpen, setIsRamOpen] = useState(true);
+  const [retentionStats, setRetentionStats] = useState(null);
+  const [isRollupRunning, setIsRollupRunning] = useState(false);
+  const [rollupFeedback, setRollupFeedback] = useState("");
 
   const apiBase = getApiBase();
   const endTime = new Date().getTime();
   const startTime = endTime - (graphHours * 3600000);
+
+  const fetchRetentionStats = () => {
+    fetch(`${apiBase}/system/retention-stats`)
+      .then(res => res.json())
+      .then(data => setRetentionStats(data))
+      .catch(err => console.error(err));
+  };
 
   useEffect(() => {
     fetch(`${apiBase}/servers`)
@@ -386,6 +396,8 @@ function Analytics() {
         }
       })
       .catch(err => console.error(err));
+      
+    fetchRetentionStats();
   }, [apiBase]);
 
   useEffect(() => {
@@ -417,6 +429,23 @@ function Analytics() {
       })
       .catch(err => console.error(err));
   }, [selectedServer, graphHours, apiBase]);
+
+  const handleTriggerRollup = async () => {
+    setIsRollupRunning(true);
+    setRollupFeedback("");
+    try {
+      const res = await fetch(`${apiBase}/system/trigger-rollup`, { method: 'POST' });
+      const data = await res.json();
+      setRollupFeedback(data.message || "Rollup executed");
+      fetchRetentionStats();
+    } catch (err) {
+      console.error(err);
+      setRollupFeedback("Error executing rollup");
+    } finally {
+      setIsRollupRunning(false);
+      setTimeout(() => setRollupFeedback(""), 4000);
+    }
+  };
 
   const latestMetrics = useMemo(() => {
     if (!graphData || graphData.length === 0) return { cpu: null, ram: null };
@@ -666,6 +695,66 @@ function Analytics() {
             </ResponsiveContainer>
           </div>
         )}
+      </div>
+
+      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+          <div>
+            <div className="flex items-center space-x-2">
+              <span className="text-xl">🗄️</span>
+              <h3 className="text-xl font-semibold text-slate-200">Database Retention & Storage Lifecycle</h3>
+            </div>
+            <p className="text-sm text-slate-400 mt-1">
+              Automated 3-tier lifecycle: 30-day raw downsampling, 15-month hourly rollups, and auto-purge.
+            </p>
+          </div>
+          <div className="flex items-center space-x-3">
+            {rollupFeedback && (
+              <span className="text-xs text-green-400 font-mono bg-green-950/60 border border-green-800/80 px-2.5 py-1 rounded">
+                {rollupFeedback}
+              </span>
+            )}
+            <button
+              onClick={handleTriggerRollup}
+              disabled={isRollupRunning}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors flex items-center space-x-2 shrink-0"
+            >
+              <span>{isRollupRunning ? "Running Rollup..." : "⚡ Run Rollup Now"}</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
+            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Hot Tier (Raw Metrics)</span>
+            <div className="text-2xl font-bold text-blue-400">
+              {retentionStats ? retentionStats.raw_count.toLocaleString() : "..."}
+            </div>
+            <span className="text-xs text-slate-500 mt-1 block">Full resolution (&lt; 30 days)</span>
+          </div>
+
+          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
+            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Warm Tier (Hourly Rollups)</span>
+            <div className="text-2xl font-bold text-amber-400">
+              {retentionStats ? retentionStats.hourly_count.toLocaleString() : "..."}
+            </div>
+            <span className="text-xs text-slate-500 mt-1 block">Downsampled (30d - 15m)</span>
+          </div>
+
+          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
+            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Scheduled Rollup</span>
+            <div className="text-lg font-bold text-emerald-400">
+              {retentionStats ? retentionStats.next_schedule : "02:00 UTC"}
+            </div>
+            <span className="text-xs text-slate-500 mt-1 block">Automated background cron</span>
+          </div>
+
+          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
+            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Max Hard Retention</span>
+            <div className="text-lg font-bold text-purple-400">15 Months</div>
+            <span className="text-xs text-slate-500 mt-1 block">Automatic cold purge</span>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">

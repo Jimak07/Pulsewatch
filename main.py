@@ -61,12 +61,39 @@ def init_db():
         """
     )
     
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metrics_raw (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_id INTEGER,
+            status INTEGER,
+            timestamp TEXT,
+            cpu_usage REAL,
+            ram_usage REAL
+        )
+        """
+    )
+    
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metrics_hourly (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_id INTEGER,
+            timestamp TEXT,
+            avg_cpu REAL,
+            avg_ram REAL
+        )
+        """
+    )
+    
     cursor.execute("PRAGMA table_info(HealthChecks)")
     columns = [row[1] for row in cursor.fetchall()]
     if "cpu_usage" not in columns:
         cursor.execute("ALTER TABLE HealthChecks ADD COLUMN cpu_usage REAL")
     if "ram_usage" not in columns:
         cursor.execute("ALTER TABLE HealthChecks ADD COLUMN ram_usage REAL")
+    
+    cursor.execute("INSERT OR IGNORE INTO metrics_raw SELECT * FROM HealthChecks")
     
     connection.commit()
     connection.close()
@@ -122,6 +149,10 @@ def update_server(server_id: int, server: ServerUpdate):
         "INSERT INTO HealthChecks (server_id, status, timestamp, cpu_usage, ram_usage) VALUES (?, ?, ?, ?, ?)",
         (server_id, server.is_active, timestamp, None, None)
     )
+    cursor.execute(
+        "INSERT INTO metrics_raw (server_id, status, timestamp, cpu_usage, ram_usage) VALUES (?, ?, ?, ?, ?)",
+        (server_id, server.is_active, timestamp, None, None)
+    )
     
     connection.commit()
     connection.close()
@@ -132,6 +163,8 @@ def delete_server(server_id: int):
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute("DELETE FROM HealthChecks WHERE server_id = ?", (server_id,))
+    cursor.execute("DELETE FROM metrics_raw WHERE server_id = ?", (server_id,))
+    cursor.execute("DELETE FROM metrics_hourly WHERE server_id = ?", (server_id,))
     cursor.execute("DELETE FROM Server WHERE server_id = ?", (server_id,))
     connection.commit()
     connection.close()
@@ -229,6 +262,40 @@ def get_uptime_matrix(server_id: int):
     connection.close()
     return matrix
 
+@app.get("/system/retention-stats")
+def get_retention_stats():
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM metrics_raw")
+    raw_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM metrics_hourly")
+    hourly_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT MIN(timestamp) FROM metrics_raw")
+    oldest_raw = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT MIN(timestamp) FROM metrics_hourly")
+    oldest_hourly = cursor.fetchone()[0]
+    
+    connection.close()
+    
+    return {
+        "raw_count": raw_count,
+        "hourly_count": hourly_count,
+        "oldest_raw": oldest_raw or "None",
+        "oldest_hourly": oldest_hourly or "None",
+        "policy_raw": "30 Days (High-Resolution)",
+        "policy_hourly": "15 Months (Hourly Aggregates)",
+        "next_schedule": "Daily at 02:00 UTC"
+    }
+
+@app.post("/system/trigger-rollup")
+def trigger_rollup():
+    process_historical_data()
+    return {"message": "Historical rollup and purge executed successfully"}
+
 def monitoring_job():
     connection = get_db_connection()
     connection.row_factory = sqlite3.Row
@@ -284,8 +351,49 @@ def monitoring_job():
             "INSERT INTO HealthChecks (server_id, status, timestamp, cpu_usage, ram_usage) VALUES (?, ?, ?, ?, ?)",
             (server_id, status, ts, cpu, ram)
         )
+        cursor.execute(
+            "INSERT INTO metrics_raw (server_id, status, timestamp, cpu_usage, ram_usage) VALUES (?, ?, ?, ?, ?)",
+            (server_id, status, ts, cpu, ram)
+        )
     connection.commit()
     connection.close()
+
+def process_historical_data():
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    cutoff_15m = (datetime.now(timezone.utc) - timedelta(days=456)).isoformat()
+    
+    cursor.execute(
+        """
+        INSERT INTO metrics_hourly (server_id, timestamp, avg_cpu, avg_ram)
+        SELECT server_id, strftime('%Y-%m-%d %H:00:00', timestamp), AVG(cpu_usage), AVG(ram_usage)
+        FROM metrics_raw
+        WHERE timestamp < ?
+        GROUP BY server_id, strftime('%Y-%m-%d %H:00:00', timestamp)
+        """,
+        (cutoff_30d,)
+    )
+    
+    cursor.execute(
+        "DELETE FROM metrics_raw WHERE timestamp < ?",
+        (cutoff_30d,)
+    )
+    
+    cursor.execute(
+        "DELETE FROM HealthChecks WHERE timestamp < ?",
+        (cutoff_30d,)
+    )
+    
+    cursor.execute(
+        "DELETE FROM metrics_hourly WHERE timestamp < ?",
+        (cutoff_15m,)
+    )
+    
+    connection.commit()
+    connection.close()
+    print(f"Historical data processed: rollup and purge completed at {datetime.now(timezone.utc).isoformat()}", flush=True)
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(
@@ -295,5 +403,11 @@ scheduler.add_job(
     misfire_grace_time=15,
     max_instances=5,
     next_run_time=datetime.now(timezone.utc)
+)
+scheduler.add_job(
+    process_historical_data,
+    'cron',
+    hour=2,
+    minute=0
 )
 scheduler.start()
