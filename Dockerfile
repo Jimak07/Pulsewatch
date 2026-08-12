@@ -6,7 +6,7 @@ COPY main.py .
 COPY install.sh .
 COPY metric_agent.py .
 
-RUN pip install fastapi uvicorn requests apscheduler passlib[bcrypt] python-jose[cryptography] pyjwt bcrypt
+RUN pip install fastapi uvicorn requests apscheduler passlib[bcrypt] python-jose[cryptography] pyjwt bcrypt python-dotenv
 
 EXPOSE 8000
 

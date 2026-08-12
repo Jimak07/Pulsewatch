@@ -33,6 +33,30 @@ export function AuthProvider({ children }) {
       throw new Error(errData.detail || 'Login failed');
     }
     const data = await res.json();
+    if (data.require_2fa) {
+      return data;
+    }
+    setToken(data.access_token);
+    setUser({ user_id: data.user_id, username: data.username });
+    localStorage.setItem('pulsewatch_token', data.access_token);
+    localStorage.setItem('pulsewatch_user', JSON.stringify({ user_id: data.user_id, username: data.username }));
+    return data;
+  };
+
+  const verify2fa = async (username, otp_code) => {
+    const apiBase = getApiBase();
+    const cleanUser = (username || '').trim();
+    const cleanOtp = (otp_code || '').trim();
+    const res = await fetch(`${apiBase}/login/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: cleanUser, otp_code: cleanOtp })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || '2FA verification failed');
+    }
+    const data = await res.json();
     setToken(data.access_token);
     setUser({ user_id: data.user_id, username: data.username });
     localStorage.setItem('pulsewatch_token', data.access_token);
@@ -60,6 +84,18 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  const updateUser = (newUsername, newToken) => {
+    setUser(prev => {
+      const updated = { ...(prev || {}), username: newUsername };
+      localStorage.setItem('pulsewatch_user', JSON.stringify(updated));
+      return updated;
+    });
+    if (newToken) {
+      setToken(newToken);
+      localStorage.setItem('pulsewatch_token', newToken);
+    }
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
@@ -80,7 +116,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ token, user, login, register, logout, authFetch }}>
+    <AuthContext.Provider value={{ token, user, login, verify2fa, register, logout, authFetch, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -92,7 +128,12 @@ function AuthScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login, register } = useAuth();
+
+  const [require2fa, setRequire2fa] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [twoFaEmail, setTwoFaEmail] = useState('');
+
+  const { login, verify2fa, register } = useAuth();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -102,13 +143,36 @@ function AuthScreen() {
       if (isRegister) {
         await register(username, password);
       } else {
-        await login(username, password);
+        const result = await login(username, password);
+        if (result && result.require_2fa) {
+          setRequire2fa(true);
+          setTwoFaEmail(result.email || '');
+        }
       }
     } catch (err) {
       setError(err.message || 'Authentication error');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleVerify2fa = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await verify2fa(username, otpCode);
+    } catch (err) {
+      setError(err.message || 'Verification error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetToLogin = () => {
+    setRequire2fa(false);
+    setOtpCode('');
+    setError('');
   };
 
   return (
@@ -122,26 +186,28 @@ function AuthScreen() {
           <p className="text-sm text-slate-400">Multi-Tenant Infrastructure Monitoring</p>
         </div>
 
-        <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
-          <button
-            type="button"
-            onClick={() => { setIsRegister(false); setError(''); }}
-            className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
-              !isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            onClick={() => { setIsRegister(true); setError(''); }}
-            className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
-              isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Register
-          </button>
-        </div>
+        {!require2fa && (
+          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <button
+              type="button"
+              onClick={() => { setIsRegister(false); setError(''); }}
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
+                !isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => { setIsRegister(true); setError(''); }}
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
+                isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Register
+            </button>
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-4 py-3 rounded-xl text-sm flex items-center space-x-2">
@@ -150,42 +216,584 @@ function AuthScreen() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Username</label>
-            <input
-              type="text"
-              required
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="e.g. admin or devops"
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-            />
-          </div>
+        {require2fa ? (
+          <form onSubmit={handleVerify2fa} className="space-y-5">
+            <div className="bg-blue-950/40 border border-blue-800/60 rounded-xl p-4 text-center space-y-2">
+              <span className="text-2xl">🛡️</span>
+              <h2 className="text-base font-bold text-blue-400">Two-Factor Authentication</h2>
+              <p className="text-xs text-slate-300">
+                A 6-digit verification code has been dispatched to <strong className="text-white">{twoFaEmail}</strong>.
+              </p>
+              <p className="text-xs text-slate-500 font-mono">
+                [Mock Mode] Check server console logs for the code.
+              </p>
+            </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-            />
-          </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 text-center">
+                Enter 6-Digit Code
+              </label>
+              <input
+                type="text"
+                maxLength="6"
+                required
+                autoFocus
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value)}
+                placeholder="123456"
+                className="w-full bg-slate-950 border border-blue-500 text-center tracking-widest font-mono text-2xl py-3 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              />
+            </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition-colors shadow-lg shadow-blue-600/30"
-          >
-            {loading ? 'Authenticating...' : isRegister ? 'Create Tenant Account' : 'Sign In to Dashboard'}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition-colors shadow-lg shadow-blue-600/30"
+            >
+              {loading ? 'Verifying 2FA...' : 'Verify & Sign In'}
+            </button>
+
+            <button
+              type="button"
+              onClick={resetToLogin}
+              className="w-full text-xs text-slate-400 hover:text-slate-200 text-center block pt-2 transition-colors"
+            >
+              ← Back to Sign In
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Username</label>
+              <input
+                type="text"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="e.g. admin or devops"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Password</label>
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition-colors shadow-lg shadow-blue-600/30"
+            >
+              {loading ? 'Authenticating...' : isRegister ? 'Create Tenant Account' : 'Sign In to Dashboard'}
+            </button>
+          </form>
+        )}
 
         <div className="pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
           Default admin: <span className="text-slate-300 font-mono">admin</span> / <span className="text-slate-300 font-mono">admin123</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Settings() {
+  const { user, authFetch, updateUser } = useAuth();
+  const apiBase = getApiBase();
+
+  const [email, setEmail] = useState('');
+  const [is2faEnabled, setIs2faEnabled] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [twoFaLoading, setTwoFaLoading] = useState(false);
+  const [emailSuccess, setEmailSuccess] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [twoFaSuccess, setTwoFaSuccess] = useState('');
+  const [twoFaError, setTwoFaError] = useState('');
+
+  const [newUsername, setNewUsername] = useState(user ? user.username : '');
+  const [usernameOtp, setUsernameOtp] = useState('');
+  const [isUsernameOtpSent, setIsUsernameOtpSent] = useState(false);
+  const [usernameOtpLoading, setUsernameOtpLoading] = useState(false);
+  const [usernameLoading, setUsernameLoading] = useState(false);
+  const [usernameSuccess, setUsernameSuccess] = useState('');
+  const [usernameError, setUsernameError] = useState('');
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordOtp, setPasswordOtp] = useState('');
+  const [isPasswordOtpSent, setIsPasswordOtpSent] = useState(false);
+  const [passwordOtpLoading, setPasswordOtpLoading] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordSuccess, setPasswordSuccess] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+
+  const fetchProfile = () => {
+    authFetch(`${apiBase}/users/me`)
+      .then(res => res.json())
+      .then(data => {
+        if (data) {
+          if (data.email) setEmail(data.email);
+          setIs2faEnabled(Boolean(data.is_2fa_enabled));
+        }
+      })
+      .catch(err => console.error(err));
+  };
+
+  useEffect(() => {
+    fetchProfile();
+  }, [apiBase]);
+
+  const handleUpdateEmail = async (e) => {
+    e.preventDefault();
+    setEmailError('');
+    setEmailSuccess('');
+    setEmailLoading(true);
+
+    try {
+      const res = await authFetch(`${apiBase}/users/email`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update email');
+      }
+      setEmailSuccess(data.message || 'Email updated successfully');
+    } catch (err) {
+      setEmailError(err.message || 'Error updating email');
+    } finally {
+      setEmailLoading(false);
+    }
+  };
+
+  const handleToggle2fa = async () => {
+    setTwoFaError('');
+    setTwoFaSuccess('');
+    setTwoFaLoading(true);
+
+    try {
+      const res = await authFetch(`${apiBase}/users/2fa-toggle`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_2fa_enabled: !is2faEnabled })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to toggle 2FA');
+      }
+      setIs2faEnabled(Boolean(data.is_2fa_enabled));
+      setTwoFaSuccess(data.message || '2FA preference updated');
+    } catch (err) {
+      setTwoFaError(err.message || 'Error updating 2FA preference');
+    } finally {
+      setTwoFaLoading(false);
+    }
+  };
+
+  const handleRequestUsernameOtp = async () => {
+    setUsernameOtpLoading(true);
+    setUsernameError('');
+    setUsernameSuccess('');
+    try {
+      const res = await authFetch(`${apiBase}/users/request-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_settings' })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to generate verification code');
+      }
+      setIsUsernameOtpSent(true);
+      setUsernameSuccess(data.message || `Verification code sent to ${data.email}. Check your inbox!`);
+    } catch (err) {
+      setUsernameError(err.message || 'Error requesting verification code');
+    } finally {
+      setUsernameOtpLoading(false);
+    }
+  };
+
+  const handleRequestPasswordOtp = async () => {
+    setPasswordOtpLoading(true);
+    setPasswordError('');
+    setPasswordSuccess('');
+    try {
+      const res = await authFetch(`${apiBase}/users/request-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_settings' })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to generate verification code');
+      }
+      setIsPasswordOtpSent(true);
+      setPasswordSuccess(data.message || `Verification code sent to ${data.email}. Check your inbox!`);
+    } catch (err) {
+      setPasswordError(err.message || 'Error requesting verification code');
+    } finally {
+      setPasswordOtpLoading(false);
+    }
+  };
+
+  const handleUpdateUsername = async (e) => {
+    e.preventDefault();
+    setUsernameError('');
+    setUsernameSuccess('');
+
+    if (!usernameOtp) {
+      setUsernameError('Please enter the 6-digit OTP code sent to your email.');
+      return;
+    }
+
+    setUsernameLoading(true);
+
+    try {
+      const res = await authFetch(`${apiBase}/users/username`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: newUsername,
+          otp_code: usernameOtp
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update username');
+      }
+
+      updateUser(data.username, data.access_token);
+      setUsernameSuccess(data.message || 'Username updated successfully');
+      setUsernameOtp('');
+      setIsUsernameOtpSent(false);
+    } catch (err) {
+      setUsernameError(err.message || 'Error updating username');
+    } finally {
+      setUsernameLoading(false);
+    }
+  };
+
+  const handleUpdatePassword = async (e) => {
+    e.preventDefault();
+    setPasswordError('');
+    setPasswordSuccess('');
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError('New passwords do not match');
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      setPasswordError('New password must be at least 6 characters');
+      return;
+    }
+
+    if (!passwordOtp) {
+      setPasswordError('Please enter the 6-digit OTP code sent to your email.');
+      return;
+    }
+
+    setPasswordLoading(true);
+
+    try {
+      const res = await authFetch(`${apiBase}/users/password`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+          otp_code: passwordOtp
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update password');
+      }
+
+      setPasswordSuccess(data.message || 'Password updated successfully');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordOtp('');
+      setIsPasswordOtpSent(false);
+    } catch (err) {
+      setPasswordError(err.message || 'Error updating password');
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-8">
+      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex items-center space-x-3 mb-6">
+          <span className="text-2xl">🛡️</span>
+          <div>
+            <h2 className="text-xl font-semibold text-slate-200">Account Security & Authentication Settings</h2>
+            <p className="text-sm text-slate-400">Configure your recovery email, optional 2FA login verification, and profile security credentials.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70 flex flex-col justify-between">
+            <form onSubmit={handleUpdateEmail} className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-emerald-400">Security Email Address</h3>
+                <span className="text-xs text-slate-500 font-mono">OTP Receiver</span>
+              </div>
+
+              {emailSuccess && (
+                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs">
+                  {emailSuccess}
+                </div>
+              )}
+              {emailError && (
+                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
+                  {emailError}
+                </div>
+              )}
+
+              <div>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="e.g. devops@company.com"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500 text-sm"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={emailLoading}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm"
+              >
+                {emailLoading ? 'Saving...' : 'Save Email'}
+              </button>
+            </form>
+          </div>
+
+          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70 flex flex-col justify-between">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-purple-400">Two-Factor Authentication</h3>
+                <span className={`text-xs px-2.5 py-1 rounded-full font-semibold border ${
+                  is2faEnabled ? 'bg-purple-950/80 text-purple-300 border-purple-700' : 'bg-slate-800 text-slate-400 border-slate-700'
+                }`}>
+                  {is2faEnabled ? '🟢 2FA Active' : '⚪ Disabled'}
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-300">
+                When enabled, sign-ins will require a 6-digit OTP code dispatched to your registered email.
+              </p>
+
+              {twoFaSuccess && (
+                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs">
+                  {twoFaSuccess}
+                </div>
+              )}
+              {twoFaError && (
+                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
+                  {twoFaError}
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleToggle2fa}
+              disabled={twoFaLoading}
+              className={`w-full font-bold py-2.5 px-4 rounded-lg transition-colors text-sm mt-4 ${
+                is2faEnabled 
+                  ? 'bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800/80' 
+                  : 'bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30'
+              }`}
+            >
+              {twoFaLoading ? 'Updating 2FA...' : is2faEnabled ? 'Disable 2FA Login' : 'Enable 2FA Login'}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70 flex flex-col justify-between">
+            <form onSubmit={handleUpdateUsername} className="space-y-4">
+              <h3 className="text-base font-semibold text-blue-400">Change Username</h3>
+              
+              {usernameSuccess && (
+                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs break-words">
+                  {usernameSuccess}
+                </div>
+              )}
+              {usernameError && (
+                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
+                  {usernameError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">New Username</label>
+                <input
+                  type="text"
+                  required
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {!isUsernameOtpSent ? (
+                <button
+                  type="button"
+                  onClick={handleRequestUsernameOtp}
+                  disabled={usernameOtpLoading}
+                  className="w-full bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 font-semibold py-2.5 px-4 rounded-lg transition-colors text-xs flex items-center justify-center space-x-2"
+                >
+                  <span>🔑</span>
+                  <span>{usernameOtpLoading ? 'Sending OTP...' : 'Request Verification Code'}</span>
+                </button>
+              ) : (
+                <div className="space-y-3 pt-2 border-t border-slate-800">
+                  <div className="flex items-center justify-between text-xs">
+                    <label className="text-slate-400 uppercase tracking-wider">6-Digit Verification Code</label>
+                    <button
+                      type="button"
+                      onClick={handleRequestUsernameOtp}
+                      className="text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Resend Code
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    maxLength="6"
+                    required
+                    placeholder="123456"
+                    value={usernameOtp}
+                    onChange={(e) => setUsernameOtp(e.target.value)}
+                    className="w-full bg-slate-950 border border-blue-500/60 text-center tracking-widest font-mono text-lg rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-400"
+                  />
+                  <p className="text-xs text-slate-500">Check server console logs for mock email code</p>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={usernameLoading || !isUsernameOtpSent}
+                className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm shadow-md shadow-blue-600/20"
+              >
+                {usernameLoading ? 'Saving...' : 'Update Username'}
+              </button>
+            </form>
+          </div>
+
+          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70">
+            <form onSubmit={handleUpdatePassword} className="space-y-4">
+              <h3 className="text-base font-semibold text-cyan-400">Change Password</h3>
+
+              {passwordSuccess && (
+                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs break-words">
+                  {passwordSuccess}
+                </div>
+              )}
+              {passwordError && (
+                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
+                  {passwordError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">Current Password</label>
+                <input
+                  type="password"
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">New Password</label>
+                <input
+                  type="password"
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">Confirm New Password</label>
+                <input
+                  type="password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {!isPasswordOtpSent ? (
+                <button
+                  type="button"
+                  onClick={handleRequestPasswordOtp}
+                  disabled={passwordOtpLoading}
+                  className="w-full bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 font-semibold py-2.5 px-4 rounded-lg transition-colors text-xs flex items-center justify-center space-x-2"
+                >
+                  <span>🔑</span>
+                  <span>{passwordOtpLoading ? 'Sending OTP...' : 'Request Verification Code'}</span>
+                </button>
+              ) : (
+                <div className="space-y-3 pt-2 border-t border-slate-800">
+                  <div className="flex items-center justify-between text-xs">
+                    <label className="text-slate-400 uppercase tracking-wider">6-Digit Verification Code</label>
+                    <button
+                      type="button"
+                      onClick={handleRequestPasswordOtp}
+                      className="text-cyan-400 hover:text-cyan-300 underline"
+                    >
+                      Resend Code
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    maxLength="6"
+                    required
+                    placeholder="123456"
+                    value={passwordOtp}
+                    onChange={(e) => setPasswordOtp(e.target.value)}
+                    className="w-full bg-slate-950 border border-cyan-500/60 text-center tracking-widest font-mono text-lg rounded-lg p-2.5 text-white focus:outline-none focus:border-cyan-400"
+                  />
+                  <p className="text-xs text-slate-500">Check server console logs for mock email code</p>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={passwordLoading || !isPasswordOtpSent}
+                className="w-full bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm shadow-md shadow-cyan-600/20"
+              >
+                {passwordLoading ? 'Updating Password...' : 'Update Password'}
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     </div>
@@ -1011,6 +1619,7 @@ function Layout({ children }) {
 
   const getPageTitle = () => {
     if (location.pathname === "/analytics") return "System Analytics";
+    if (location.pathname === "/settings") return "Account Settings";
     return "PulseWatch Dashboard";
   };
 
@@ -1040,13 +1649,19 @@ function Layout({ children }) {
             >
               Analytics
             </Link>
+            <Link 
+              to="/settings" 
+              className={`block px-4 py-3 rounded-lg transition-colors ${location.pathname === "/settings" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-700 hover:text-white"}`}
+            >
+              Settings
+            </Link>
           </nav>
           
           {user && (
-            <div className="p-4 m-4 bg-slate-900/60 rounded-xl border border-slate-700/60">
+            <Link to="/settings" className="p-4 m-4 bg-slate-900/60 hover:bg-slate-900 rounded-xl border border-slate-700/60 transition-colors block">
               <div className="text-xs text-slate-400 mb-1">Signed in as</div>
               <div className="font-semibold text-blue-400 truncate">{user.username}</div>
-            </div>
+            </Link>
           )}
         </div>
       </div>
@@ -1069,9 +1684,9 @@ function Layout({ children }) {
           
           <div className="flex items-center space-x-3">
             {user && (
-              <span className="hidden sm:inline-block text-xs bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-full text-slate-300">
+              <Link to="/settings" className="hidden sm:inline-block text-xs bg-slate-900 hover:bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-full text-slate-300 transition-colors">
                 👤 <strong className="text-blue-400">{user.username}</strong>
-              </span>
+              </Link>
             )}
             <button
               onClick={logout}
@@ -1103,6 +1718,7 @@ function ProtectedApp() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

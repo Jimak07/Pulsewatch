@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -10,7 +10,25 @@ import requests
 from urllib.parse import urlparse
 import bcrypt
 import jwt
+import random
+import os
+import ssl
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    if os.path.exists(".env"):
+        with open(".env", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 SECRET_KEY = "pulsewatch-multi-tenant-jwt-secret-key-32-chars-long"
 ALGORITHM = "HS256"
@@ -32,6 +50,28 @@ class UserAuth(BaseModel):
     username: str
     password: str
 
+class LoginVerify(BaseModel):
+    username: str
+    otp_code: str
+
+class Toggle2FA(BaseModel):
+    is_2fa_enabled: Optional[bool] = None
+
+class RequestOTP(BaseModel):
+    action: Optional[str] = "update_settings"
+
+class UpdateEmail(BaseModel):
+    email: str
+
+class UpdateUsername(BaseModel):
+    username: str
+    otp_code: str
+
+class UpdatePassword(BaseModel):
+    current_password: str
+    new_password: str
+    otp_code: str
+
 class ServerCreate(BaseModel):
     hostname: str
     server_role: str
@@ -39,6 +79,52 @@ class ServerCreate(BaseModel):
 
 class ServerUpdate(BaseModel):
     is_active: int
+
+def generate_otp_code() -> str:
+    return f"{random.randint(100000, 999999)}"
+
+def send_actual_otp_email(to_email: str, code: str):
+    smtp_email = os.getenv("SMTP_EMAIL", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    
+    if not smtp_email or not smtp_password:
+        print(f"[MOCK EMAIL FALLBACK] Sent OTP {code} to {to_email} (Configure SMTP_EMAIL and SMTP_PASSWORD in .env)", flush=True)
+        return
+        
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "PulseWatch Security Verification Code"
+        msg["From"] = smtp_email
+        msg["To"] = to_email
+        
+        text_content = f"Your PulseWatch verification code is: {code}\n\nThis code will expire in 10 minutes."
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 24px; border-radius: 8px;">
+            <h2 style="color: #3b82f6; margin-top: 0;">⚡ PulseWatch Security</h2>
+            <p style="font-size: 14px; color: #94a3b8;">Your one-time security verification code is:</p>
+            <div style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #60a5fa; padding: 12px 0; font-family: monospace;">{code}</div>
+            <p style="font-size: 12px; color: #64748b;">This code will expire in 10 minutes. If you did not request this code, please secure your account immediately.</p>
+        </div>
+        """
+        msg.attach(MIMEText(text_content, "plain"))
+        msg.attach(MIMEText(html_content, "html"))
+        
+        try:
+            context = ssl.create_default_context()
+            server = smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=12)
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
+            server.quit()
+            print(f"[SMTP EMAIL] Successfully delivered OTP {code} to {to_email} via Port 465 (SSL)", flush=True)
+        except Exception:
+            server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
+            server.quit()
+            print(f"[SMTP EMAIL] Successfully delivered OTP {code} to {to_email} via Port 587 (TLS)", flush=True)
+    except Exception as e:
+        print(f"[SMTP ERROR] Failed to send email to {to_email}: {e}", flush=True)
 
 def hash_password(password: str) -> str:
     pwd_bytes = password.encode("utf-8")[:72]
@@ -94,7 +180,22 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            is_2fa_enabled INTEGER DEFAULT 0
+        )
+        """
+    )
+    
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS otp_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            action TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
         """
     )
@@ -152,6 +253,13 @@ def init_db():
         """
     )
     
+    cursor.execute("PRAGMA table_info(users)")
+    user_columns = [row[1] for row in cursor.fetchall()]
+    if "email" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    if "is_2fa_enabled" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_2fa_enabled INTEGER DEFAULT 0")
+        
     cursor.execute("PRAGMA table_info(Server)")
     server_columns = [row[1] for row in cursor.fetchall()]
     if "user_id" not in server_columns:
@@ -164,13 +272,10 @@ def init_db():
     if "ram_usage" not in columns:
         cursor.execute("ALTER TABLE HealthChecks ADD COLUMN ram_usage REAL")
     
-    cursor.execute("SELECT id FROM users WHERE username = 'admin'")
-    admin_row = cursor.fetchone()
-    default_pwd = hash_password("admin123")
-    if not admin_row:
-        cursor.execute("INSERT INTO users (id, username, password_hash) VALUES (1, 'admin', ?)", (default_pwd,))
-    else:
-        cursor.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (default_pwd,))
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] == 0:
+        default_pwd = hash_password("admin123")
+        cursor.execute("INSERT INTO users (id, username, password_hash, email) VALUES (1, 'admin', ?, 'admin@pulsewatch.local')", (default_pwd,))
     
     cursor.execute("UPDATE Server SET user_id = 1 WHERE user_id IS NULL")
     cursor.execute("INSERT OR IGNORE INTO metrics_raw SELECT * FROM HealthChecks")
@@ -190,7 +295,7 @@ def register(auth: UserAuth):
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (clean_username, hashed))
+        cursor.execute("INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)", (clean_username, hashed, f"{clean_username}@pulsewatch.local"))
         user_id = cursor.lastrowid
         connection.commit()
     except sqlite3.IntegrityError:
@@ -202,20 +307,255 @@ def register(auth: UserAuth):
     return {"access_token": token, "token_type": "bearer", "user_id": user_id, "username": clean_username}
 
 @app.post("/login")
-def login(auth: UserAuth):
+def login(auth: UserAuth, background_tasks: BackgroundTasks = None):
     clean_username = auth.username.strip()
     connection = get_db_connection()
     cursor = connection.cursor()
-    cursor.execute("SELECT id, password_hash FROM users WHERE username = ?", (clean_username,))
+    cursor.execute("SELECT id, password_hash, email, is_2fa_enabled FROM users WHERE username = ?", (clean_username,))
     row = cursor.fetchone()
-    connection.close()
     
     if not row or not verify_password(auth.password, row[1]):
+        connection.close()
         raise HTTPException(status_code=401, detail="Invalid username or password")
         
-    user_id = row[0]
+    user_id, email, is_2fa = row[0], row[2], bool(row[3])
+    
+    if is_2fa:
+        target_email = email.strip() if email and email.strip() else f"{clean_username}@pulsewatch.local"
+        code = generate_otp_code()
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        
+        cursor.execute("DELETE FROM otp_codes WHERE user_id = ? AND action = 'login'", (user_id,))
+        cursor.execute(
+            "INSERT INTO otp_codes (user_id, code, action, expires_at) VALUES (?, ?, 'login', ?)",
+            (user_id, code, expires_at)
+        )
+        connection.commit()
+        connection.close()
+        
+        if background_tasks:
+            background_tasks.add_task(send_actual_otp_email, target_email, code)
+        else:
+            send_actual_otp_email(target_email, code)
+            
+        return {
+            "require_2fa": True,
+            "username": clean_username,
+            "email": target_email,
+            "message": f"Two-factor authentication code sent to {target_email}"
+        }
+        
+    connection.close()
     token = create_access_token(user_id, clean_username)
-    return {"access_token": token, "token_type": "bearer", "user_id": user_id, "username": clean_username}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user_id,
+        "username": clean_username,
+        "require_2fa": False
+    }
+
+@app.post("/login/verify")
+def login_verify(data: LoginVerify):
+    clean_username = data.username.strip()
+    clean_otp = data.otp_code.strip()
+    
+    if not clean_username or not clean_otp:
+        raise HTTPException(status_code=400, detail="Username and verification code are required")
+        
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT id FROM users WHERE username = ?", (clean_username,))
+    user_row = cursor.fetchone()
+    if not user_row:
+        connection.close()
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    user_id = user_row[0]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        "SELECT id FROM otp_codes WHERE user_id = ? AND code = ? AND action = 'login' AND expires_at > ?",
+        (user_id, clean_otp, now_iso)
+    )
+    otp_row = cursor.fetchone()
+    if not otp_row:
+        connection.close()
+        raise HTTPException(status_code=400, detail="Invalid or expired 2FA code")
+        
+    cursor.execute("DELETE FROM otp_codes WHERE id = ?", (otp_row[0],))
+    connection.commit()
+    connection.close()
+    
+    token = create_access_token(user_id, clean_username)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user_id,
+        "username": clean_username
+    }
+
+@app.get("/users/me")
+def get_user_profile(current_user_id: int = Depends(get_current_user)):
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT id, username, email, is_2fa_enabled FROM users WHERE id = ?", (current_user_id,))
+    row = cursor.fetchone()
+    connection.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "id": row[0],
+        "username": row[1],
+        "email": row[2] or "",
+        "is_2fa_enabled": bool(row[3])
+    }
+
+@app.put("/users/email")
+def update_email(data: UpdateEmail, current_user_id: int = Depends(get_current_user)):
+    clean_email = data.email.strip()
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("UPDATE users SET email = ? WHERE id = ?", (clean_email, current_user_id))
+    connection.commit()
+    connection.close()
+    return {"message": "Email updated successfully", "email": clean_email}
+
+@app.put("/users/2fa-toggle")
+def toggle_2fa(data: Optional[Toggle2FA] = None, current_user_id: int = Depends(get_current_user)):
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    if data is not None and data.is_2fa_enabled is not None:
+        new_val = 1 if data.is_2fa_enabled else 0
+    else:
+        cursor.execute("SELECT is_2fa_enabled FROM users WHERE id = ?", (current_user_id,))
+        row = cursor.fetchone()
+        current_status = row[0] if row and row[0] else 0
+        new_val = 0 if current_status else 1
+        
+    cursor.execute("UPDATE users SET is_2fa_enabled = ? WHERE id = ?", (new_val, current_user_id))
+    connection.commit()
+    connection.close()
+    
+    return {
+        "message": f"Two-Factor Authentication {'enabled' if new_val else 'disabled'} successfully",
+        "is_2fa_enabled": bool(new_val)
+    }
+
+@app.post("/users/request-otp")
+def request_otp(data: Optional[RequestOTP] = None, background_tasks: BackgroundTasks = None, current_user_id: int = Depends(get_current_user)):
+    action = (data.action if data and data.action else "update_settings").strip()
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT username, email FROM users WHERE id = ?", (current_user_id,))
+    row = cursor.fetchone()
+    if not row:
+        connection.close()
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    username, email = row[0], row[1]
+    target_email = email.strip() if email and email.strip() else f"{username}@pulsewatch.local"
+    
+    code = generate_otp_code()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    
+    cursor.execute("DELETE FROM otp_codes WHERE user_id = ? AND action = ?", (current_user_id, action))
+    cursor.execute(
+        "INSERT INTO otp_codes (user_id, code, action, expires_at) VALUES (?, ?, ?, ?)",
+        (current_user_id, code, action, expires_at)
+    )
+    connection.commit()
+    connection.close()
+    
+    if background_tasks:
+        background_tasks.add_task(send_actual_otp_email, target_email, code)
+    else:
+        send_actual_otp_email(target_email, code)
+        
+    return {
+        "message": f"Verification code sent to {target_email}",
+        "email": target_email,
+        "expires_in_minutes": 10
+    }
+
+@app.put("/users/username")
+def update_username(data: UpdateUsername, current_user_id: int = Depends(get_current_user)):
+    clean_username = data.username.strip()
+    clean_otp = (data.otp_code or "").strip()
+    if not clean_username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    if not clean_otp:
+        raise HTTPException(status_code=400, detail="Verification code is required")
+        
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        "SELECT id FROM otp_codes WHERE user_id = ? AND code = ? AND action = 'update_settings' AND expires_at > ?",
+        (current_user_id, clean_otp, now_iso)
+    )
+    otp_row = cursor.fetchone()
+    if not otp_row:
+        connection.close()
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+        
+    cursor.execute("SELECT id FROM users WHERE username = ? AND id != ?", (clean_username, current_user_id))
+    if cursor.fetchone():
+        connection.close()
+        raise HTTPException(status_code=400, detail="Username already taken")
+        
+    cursor.execute("DELETE FROM otp_codes WHERE id = ?", (otp_row[0],))
+    cursor.execute("UPDATE users SET username = ? WHERE id = ?", (clean_username, current_user_id))
+    connection.commit()
+    connection.close()
+    
+    new_token = create_access_token(current_user_id, clean_username)
+    return {
+        "message": "Username updated successfully",
+        "username": clean_username,
+        "access_token": new_token
+    }
+
+@app.put("/users/password")
+def update_password(data: UpdatePassword, current_user_id: int = Depends(get_current_user)):
+    clean_otp = (data.otp_code or "").strip()
+    if not data.current_password or not data.new_password:
+        raise HTTPException(status_code=400, detail="Current and new password are required")
+    if not clean_otp:
+        raise HTTPException(status_code=400, detail="Verification code is required")
+        
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        "SELECT id FROM otp_codes WHERE user_id = ? AND code = ? AND action = 'update_settings' AND expires_at > ?",
+        (current_user_id, clean_otp, now_iso)
+    )
+    otp_row = cursor.fetchone()
+    if not otp_row:
+        connection.close()
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+        
+    cursor.execute("SELECT password_hash FROM users WHERE id = ?", (current_user_id,))
+    row = cursor.fetchone()
+    if not row:
+        connection.close()
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    stored_hash = row[0]
+    if not verify_password(data.current_password, stored_hash):
+        connection.close()
+        raise HTTPException(status_code=400, detail="Incorrect current password")
+        
+    new_hash = hash_password(data.new_password)
+    cursor.execute("DELETE FROM otp_codes WHERE id = ?", (otp_row[0],))
+    cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, current_user_id))
+    connection.commit()
+    connection.close()
+    
+    return {"message": "Password updated successfully"}
 
 @app.get("/install.sh")
 def get_install_script():
