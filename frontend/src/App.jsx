@@ -335,6 +335,13 @@ function Settings() {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [channels, setChannels] = useState([]);
+  const [channelType, setChannelType] = useState('webhook');
+  const [destinationUrl, setDestinationUrl] = useState('');
+  const [channelLoading, setChannelLoading] = useState(false);
+  const [channelSuccess, setChannelSuccess] = useState('');
+  const [channelError, setChannelError] = useState('');
+  const [testingChannelId, setTestingChannelId] = useState(null);
 
   const fetchProfile = () => {
     authFetch(`${apiBase}/users/me`)
@@ -348,8 +355,18 @@ function Settings() {
       .catch(err => console.error(err));
   };
 
+  const fetchChannels = () => {
+    authFetch(`${apiBase}/notification-channels`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setChannels(data);
+      })
+      .catch(err => console.error(err));
+  };
+
   useEffect(() => {
     fetchProfile();
+    fetchChannels();
   }, [apiBase]);
 
   const handleUpdateEmail = async (e) => {
@@ -453,6 +470,11 @@ function Settings() {
     setUsernameError('');
     setUsernameSuccess('');
 
+    if (!newUsername.trim()) {
+      setUsernameError('Username cannot be blank');
+      return;
+    }
+
     if (!usernameOtp) {
       setUsernameError('Please enter the 6-digit OTP code sent to your email.');
       return;
@@ -465,7 +487,7 @@ function Settings() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: newUsername,
+          username: newUsername.trim(),
           otp_code: usernameOtp
         })
       });
@@ -475,8 +497,10 @@ function Settings() {
         throw new Error(data.detail || 'Failed to update username');
       }
 
-      updateUser(data.username, data.access_token);
       setUsernameSuccess(data.message || 'Username updated successfully');
+      if (updateUser) {
+        updateUser({ username: data.username });
+      }
       setUsernameOtp('');
       setIsUsernameOtpSent(false);
     } catch (err) {
@@ -534,6 +558,88 @@ function Settings() {
       setPasswordError(err.message || 'Error updating password');
     } finally {
       setPasswordLoading(false);
+    }
+  };
+
+  const handleCreateChannel = async (e) => {
+    e.preventDefault();
+    setChannelError('');
+    setChannelSuccess('');
+    setChannelLoading(true);
+
+    try {
+      const res = await authFetch(`${apiBase}/notification-channels`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel_type: channelType,
+          destination_url: destinationUrl.trim(),
+          is_active: 1
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to create notification channel');
+      }
+
+      setChannelSuccess(data.message || 'Notification channel added successfully');
+      setDestinationUrl('');
+      fetchChannels();
+    } catch (err) {
+      setChannelError(err.message || 'Error creating channel');
+    } finally {
+      setChannelLoading(false);
+    }
+  };
+
+  const handleToggleChannel = async (id, currentStatus) => {
+    try {
+      const res = await authFetch(`${apiBase}/notification-channels/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: currentStatus ? 0 : 1 })
+      });
+      if (res.ok) {
+        fetchChannels();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteChannel = async (id) => {
+    try {
+      const res = await authFetch(`${apiBase}/notification-channels/${id}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        setChannelSuccess('Notification channel removed');
+        fetchChannels();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleTestChannel = async (id) => {
+    setTestingChannelId(id);
+    setChannelSuccess('');
+    setChannelError('');
+    try {
+      const res = await authFetch(`${apiBase}/notification-channels/${id}/test`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setChannelSuccess(data.message || 'Test alert dispatched successfully');
+      } else {
+        setChannelError(data.detail || 'Failed to dispatch test alert');
+      }
+    } catch (err) {
+      setChannelError(err.message || 'Error dispatching test alert');
+    } finally {
+      setTestingChannelId(null);
     }
   };
 
@@ -688,7 +794,7 @@ function Settings() {
                     onChange={(e) => setUsernameOtp(e.target.value)}
                     className="w-full bg-slate-950 border border-blue-500/60 text-center tracking-widest font-mono text-lg rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-400"
                   />
-                  <p className="text-xs text-slate-500">Check server console logs for mock email code</p>
+                  <p className="text-xs text-slate-500">Check your email inbox for your 6-digit verification code</p>
                 </div>
               )}
 
@@ -781,7 +887,7 @@ function Settings() {
                     onChange={(e) => setPasswordOtp(e.target.value)}
                     className="w-full bg-slate-950 border border-cyan-500/60 text-center tracking-widest font-mono text-lg rounded-lg p-2.5 text-white focus:outline-none focus:border-cyan-400"
                   />
-                  <p className="text-xs text-slate-500">Check server console logs for mock email code</p>
+                  <p className="text-xs text-slate-500">Check your email inbox for your 6-digit verification code</p>
                 </div>
               )}
 
@@ -794,6 +900,135 @@ function Settings() {
               </button>
             </form>
           </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+        <div className="flex items-center space-x-3 mb-6">
+          <span className="text-2xl">⚡</span>
+          <div>
+            <h2 className="text-xl font-semibold text-slate-200">Alerting & Webhook Dispatcher Channels</h2>
+            <p className="text-sm text-slate-400">Receive real-time state transition alerts (UP ↔ DOWN) across email, webhooks, Discord, Slack, and Telegram.</p>
+          </div>
+        </div>
+
+        {channelSuccess && (
+          <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-4 py-2.5 rounded-lg text-xs mb-6">
+            {channelSuccess}
+          </div>
+        )}
+        {channelError && (
+          <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-4 py-2.5 rounded-lg text-xs mb-6">
+            {channelError}
+          </div>
+        )}
+
+        <form onSubmit={handleCreateChannel} className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/70 mb-6">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Add Notification Destination</h3>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1 font-medium">Channel Type</label>
+              <select
+                value={channelType}
+                onChange={(e) => setChannelType(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="webhook">Custom Webhook (JSON)</option>
+                <option value="discord">Discord Webhook</option>
+                <option value="slack">Slack Incoming Webhook</option>
+                <option value="telegram">Telegram Bot Webhook</option>
+                <option value="email">Email Alert</option>
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-slate-400 mb-1 font-medium">Destination URL or Email Address</label>
+              <input
+                type="text"
+                required
+                value={destinationUrl}
+                onChange={(e) => setDestinationUrl(e.target.value)}
+                placeholder={channelType === 'email' ? 'devops@company.com' : 'https://discord.com/api/webhooks/... or https://hooks.slack.com/...'}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-blue-500 font-mono"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                type="submit"
+                disabled={channelLoading}
+                className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm shadow-md shadow-blue-600/30"
+              >
+                {channelLoading ? 'Adding...' : 'Add Channel'}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold text-slate-300">Configured Notification Destinations ({channels.length})</h3>
+          {channels.length === 0 ? (
+            <div className="bg-slate-900/40 border border-dashed border-slate-700/80 rounded-xl p-8 text-center text-slate-500 text-sm">
+              No alert channels configured. Add your first webhook or email above to start receiving outage alerts.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-700/60 border border-slate-700/70 rounded-xl overflow-hidden bg-slate-900/40">
+              {channels.map((ch) => (
+                <div key={ch.id} className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center space-x-3">
+                    <span className="text-xl">
+                      {ch.channel_type === 'discord' && '🎮'}
+                      {ch.channel_type === 'slack' && '💬'}
+                      {ch.channel_type === 'telegram' && '✈️'}
+                      {ch.channel_type === 'email' && '✉️'}
+                      {ch.channel_type === 'webhook' && '🔗'}
+                    </span>
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs uppercase font-bold px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">
+                          {ch.channel_type}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                          ch.is_active ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800' : 'bg-slate-800 text-slate-500 border border-slate-700'
+                        }`}>
+                          {ch.is_active ? 'Active' : 'Muted'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-400 font-mono mt-1 break-all">
+                        {ch.destination_url}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2 self-end sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => handleTestChannel(ch.id)}
+                      disabled={testingChannelId === ch.id}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded-lg border border-slate-600 transition-colors"
+                    >
+                      {testingChannelId === ch.id ? 'Sending...' : 'Test Alert'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleChannel(ch.id, ch.is_active)}
+                      className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                        ch.is_active 
+                          ? 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border-amber-800/80' 
+                          : 'bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border-emerald-800/80'
+                      }`}
+                    >
+                      {ch.is_active ? 'Mute' : 'Enable'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteChannel(ch.id)}
+                      className="bg-red-950/60 hover:bg-red-900/80 text-red-300 text-xs px-3 py-1.5 rounded-lg border border-red-800/80 transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

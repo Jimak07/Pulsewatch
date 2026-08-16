@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+requests
+httpx
+apscheduler
+passlib[bcrypt]
+python-jose[cryptography]
+pyjwt
+bcrypt
+python-dotenv
+psycopg2-binary
+sqlalchemy

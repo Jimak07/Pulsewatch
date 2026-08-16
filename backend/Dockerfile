@@ -5,8 +5,10 @@ WORKDIR /app
 COPY main.py .
 COPY install.sh .
 COPY metric_agent.py .
+COPY database.py .
+COPY requirements.txt .
 
-RUN pip install fastapi uvicorn requests apscheduler passlib[bcrypt] python-jose[cryptography] pyjwt bcrypt python-dotenv
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 
