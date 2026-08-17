@@ -5,7 +5,7 @@ from pathlib import Path
 load_dotenv()
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -48,6 +48,8 @@ class Server(Base):
     target_address = Column(String, nullable=False)
     active_connections = Column(Integer, default=0)
     is_active = Column(Integer, default=1)
+    ssl_expiry_date = Column(String, nullable=True)
+    ssl_days_remaining = Column(Integer, nullable=True)
 
 class NotificationChannel(Base):
     __tablename__ = "notification_channels"
@@ -89,6 +91,13 @@ class MetricHourly(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        try:
+            conn.execute(text('ALTER TABLE "Server" ADD COLUMN IF NOT EXISTS ssl_expiry_date VARCHAR'))
+            conn.execute(text('ALTER TABLE "Server" ADD COLUMN IF NOT EXISTS ssl_days_remaining INTEGER'))
+            conn.commit()
+        except Exception:
+            pass
 
 def get_db():
     db = SessionLocal()

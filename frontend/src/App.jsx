@@ -1187,10 +1187,24 @@ function ServerCard({ server, onDelete }) {
         </div>
       </div>
       
-      <div className="space-y-2 text-slate-300 mb-4 flex-grow">
+      <div className="space-y-2 text-slate-300 mb-4 flex-grow text-xs">
         <p><span className="font-bold text-slate-500">Target:</span> {server.target_address || 'N/A'}</p>
         <p><span className="font-bold text-slate-500">Role:</span> {server.server_role}</p>
         <p><span className="font-bold text-slate-500">Connections:</span> {server.active_connections}</p>
+        {server.ssl_days_remaining !== null && server.ssl_days_remaining !== undefined && (
+          <p className="flex items-center space-x-1.5 pt-1">
+            <span className="font-bold text-slate-500">SSL Cert:</span>
+            <span className={`px-2 py-0.5 rounded font-mono font-medium ${
+              server.ssl_days_remaining <= 7
+                ? 'bg-red-950/80 text-red-300 border border-red-800'
+                : server.ssl_days_remaining <= 30
+                ? 'bg-amber-950/80 text-amber-300 border border-amber-800'
+                : 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
+            }`}>
+              🔒 {server.ssl_days_remaining}d left ({server.ssl_expiry_date ? new Date(server.ssl_expiry_date).toLocaleDateString() : ''})
+            </span>
+          </p>
+        )}
       </div>
 
       <div className="h-32 w-full mt-4 border-t border-slate-700 pt-4">

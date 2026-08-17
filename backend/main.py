@@ -11,6 +11,7 @@ import bcrypt
 import jwt
 import random
 import os
+import socket
 import ssl
 import smtplib
 from email.mime.text import MIMEText
@@ -29,6 +30,32 @@ load_dotenv()
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from database import engine, Base, init_db, get_db, SessionLocal, User, OTPCode, Server, NotificationChannel, HealthCheck, MetricRaw, MetricHourly
+
+AGENT_AUTH_TOKEN = os.getenv("AGENT_AUTH_TOKEN", "pulsewatch-agent-secret-token-2026")
+ssl_alerts_dispatched: dict[int, set[int]] = {}
+
+def extract_ssl_expiry(host: str, port: int = 443, timeout: float = 4.0) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+                if not cert or "notAfter" not in cert:
+                    return None, None, None
+                not_after_str = cert["notAfter"]
+                expiry_dt = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                days_left = (expiry_dt - now).days
+                return expiry_dt.isoformat(), days_left, None
+    except ssl.SSLCertVerificationError as e:
+        return None, 0, str(e)
+    except ssl.SSLError as e:
+        return None, 0, str(e)
+    except Exception as e:
+        err_msg = str(e)
+        if "ssl" in err_msg.lower() or "certificate" in err_msg.lower():
+            return None, 0, err_msg
+        return None, None, None
 
 
 SECRET_KEY = "pulsewatch-multi-tenant-jwt-secret-key-32-chars-long"
@@ -164,26 +191,61 @@ def send_alert_email(to_email: str, alert_data: dict):
     try:
         hostname = alert_data.get("hostname", "Unknown")
         status_str = alert_data.get("status", "UNKNOWN")
+        alert_type = alert_data.get("alert_type", "STATE_TRANSITION")
+        is_ssl = alert_type == "SSL_EXPIRATION_WARNING"
         is_down = status_str == "DOWN"
-        status_color = "#ef4444" if is_down else "#22c55e"
-        badge_text = "CRITICAL ALERT" if is_down else "RECOVERY NOTIFICATION"
         
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"PulseWatch [{status_str}]: Server {hostname} is {status_str}"
-        msg["From"] = smtp_email
-        msg["To"] = to_email
-        
-        text_content = f"PulseWatch Alert: Server '{hostname}' transitioned to {status_str}.\nRole: {alert_data.get('server_role', 'Server')}\nTarget: {alert_data.get('target_address', 'N/A')}\nTimestamp: {alert_data.get('timestamp', '')}\n"
-        html_content = f"""
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 28px; border-radius: 12px; max-width: 600px;">
-            <div style="font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1.5px; color: {status_color}; margin-bottom: 8px;">{badge_text}</div>
-            <h2 style="color: #f8fafc; margin-top: 0; margin-bottom: 16px; font-size: 22px;">Server '{hostname}' is {status_str}</h2>
-            <div style="background-color: #1e293b; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.6;">
+        if is_ssl:
+            status_color = "#f59e0b"
+            badge_text = "SSL CERTIFICATE EXPIRATION WARNING"
+            subject_str = f"PulseWatch [SSL EXPIRING]: Server {hostname} certificate expires in {alert_data.get('ssl_days_remaining')} days"
+            detail_html = f"""
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Hostname:</strong> {hostname}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Target Address:</strong> {alert_data.get('target_address', 'N/A')}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">SSL Expiry Date:</strong> <span style="color: #f59e0b; font-weight: bold;">{alert_data.get('ssl_expiry_date', 'N/A')}</span></div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Days Remaining:</strong> <span style="color: #f59e0b; font-weight: bold;">{alert_data.get('ssl_days_remaining', 'N/A')} day(s)</span></div>
+                <div><strong style="color: #94a3b8;">Timestamp:</strong> {alert_data.get('timestamp', '')}</div>
+            """
+            title_html = f"SSL Certificate Expiring Soon for '{hostname}'"
+            text_content = f"PulseWatch SSL Alert: Server '{hostname}' certificate expires in {alert_data.get('ssl_days_remaining')} day(s) on {alert_data.get('ssl_expiry_date')}.\nTarget: {alert_data.get('target_address', 'N/A')}\nTimestamp: {alert_data.get('timestamp', '')}\n"
+        elif is_down:
+            status_color = "#ef4444"
+            badge_text = "CRITICAL ALERT"
+            subject_str = f"PulseWatch [{status_str}]: Server {hostname} is {status_str}"
+            detail_html = f"""
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Hostname:</strong> {hostname}</div>
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Role:</strong> {alert_data.get('server_role', 'Server')}</div>
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Target Address:</strong> {alert_data.get('target_address', 'N/A')}</div>
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Status:</strong> <span style="color: {status_color}; font-weight: bold;">{status_str}</span></div>
                 <div><strong style="color: #94a3b8;">Timestamp:</strong> {alert_data.get('timestamp', '')}</div>
+            """
+            title_html = f"Server '{hostname}' is {status_str}"
+            text_content = f"PulseWatch Alert: Server '{hostname}' transitioned to {status_str}.\nRole: {alert_data.get('server_role', 'Server')}\nTarget: {alert_data.get('target_address', 'N/A')}\nTimestamp: {alert_data.get('timestamp', '')}\n"
+        else:
+            status_color = "#22c55e"
+            badge_text = "RECOVERY NOTIFICATION"
+            subject_str = f"PulseWatch [{status_str}]: Server {hostname} is {status_str}"
+            detail_html = f"""
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Hostname:</strong> {hostname}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Role:</strong> {alert_data.get('server_role', 'Server')}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Target Address:</strong> {alert_data.get('target_address', 'N/A')}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Status:</strong> <span style="color: {status_color}; font-weight: bold;">{status_str}</span></div>
+                <div><strong style="color: #94a3b8;">Timestamp:</strong> {alert_data.get('timestamp', '')}</div>
+            """
+            title_html = f"Server '{hostname}' is {status_str}"
+            text_content = f"PulseWatch Alert: Server '{hostname}' transitioned to {status_str}.\nRole: {alert_data.get('server_role', 'Server')}\nTarget: {alert_data.get('target_address', 'N/A')}\nTimestamp: {alert_data.get('timestamp', '')}\n"
+        
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject_str
+        msg["From"] = smtp_email
+        msg["To"] = to_email
+        
+        html_content = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 28px; border-radius: 12px; max-width: 600px;">
+            <div style="font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1.5px; color: {status_color}; margin-bottom: 8px;">{badge_text}</div>
+            <h2 style="color: #f8fafc; margin-top: 0; margin-bottom: 16px; font-size: 22px;">{title_html}</h2>
+            <div style="background-color: #1e293b; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.6;">
+                {detail_html}
             </div>
             <p style="font-size: 12px; color: #64748b; margin: 0;">Automated alert from PulseWatch Monitoring System.</p>
         </div>
@@ -217,26 +279,33 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
 
     hostname = alert_data.get("hostname", "Unknown")
     status_str = alert_data.get("status", "UNKNOWN")
+    alert_type = alert_data.get("alert_type", "STATE_TRANSITION")
+    is_ssl = alert_type == "SSL_EXPIRATION_WARNING"
     is_down = status_str == "DOWN"
-    emoji = "🔴" if is_down else "🟢"
+    emoji = "⚠️" if is_ssl else ("🔴" if is_down else "🟢")
 
     try:
         if channel_type == "email":
             send_alert_email(destination, alert_data)
         elif channel_type == "discord":
-            embed_color = 15158332 if is_down else 3066993
+            embed_color = 16107020 if is_ssl else (15158332 if is_down else 3066993)
+            fields = [
+                {"name": "Hostname", "value": hostname, "inline": True},
+                {"name": "Status", "value": status_str, "inline": True},
+                {"name": "Target", "value": alert_data.get("target_address", "N/A"), "inline": False}
+            ]
+            if is_ssl:
+                fields.append({"name": "SSL Expiry", "value": alert_data.get("ssl_expiry_date", "N/A"), "inline": True})
+                fields.append({"name": "Days Left", "value": str(alert_data.get("ssl_days_remaining", "N/A")), "inline": True})
+            fields.append({"name": "Timestamp", "value": alert_data.get("timestamp", ""), "inline": False})
+            
             payload = {
-                "content": f"{emoji} **[PulseWatch Alert]** Server `{hostname}` is now **{status_str}**!",
+                "content": f"{emoji} **[PulseWatch Alert]** Server `{hostname}`: **{status_str}**!",
                 "embeds": [
                     {
-                        "title": f"Server Status: {status_str}",
+                        "title": f"SSL Warning: {alert_data.get('ssl_days_remaining')} Days Left" if is_ssl else f"Server Status: {status_str}",
                         "color": embed_color,
-                        "fields": [
-                            {"name": "Hostname", "value": hostname, "inline": True},
-                            {"name": "Status", "value": status_str, "inline": True},
-                            {"name": "Target", "value": alert_data.get("target_address", "N/A"), "inline": False},
-                            {"name": "Timestamp", "value": alert_data.get("timestamp", ""), "inline": False}
-                        ],
+                        "fields": fields,
                         "footer": {"text": "PulseWatch Alerting Engine"}
                     }
                 ]
@@ -244,32 +313,38 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
             res = await client.post(destination, json=payload, timeout=8.0)
             print(f"[DISPATCH DISCORD] Status {res.status_code} for {destination}", flush=True)
         elif channel_type == "slack":
-            payload = {
-                "text": f"{emoji} *[PulseWatch Alert]* Server *{hostname}* is now *{status_str}*!\n*Target:* {alert_data.get('target_address')}\n*Time:* {alert_data.get('timestamp')}"
-            }
+            if is_ssl:
+                msg_txt = f"⚠️ *[PulseWatch SSL Warning]* SSL Certificate for *{hostname}* ({alert_data.get('target_address')}) will expire in *{alert_data.get('ssl_days_remaining')} day(s)* on {alert_data.get('ssl_expiry_date')}."
+            else:
+                msg_txt = f"{emoji} *[PulseWatch Alert]* Server *{hostname}* is now *{status_str}*!\n*Target:* {alert_data.get('target_address')}\n*Time:* {alert_data.get('timestamp')}"
+            payload = {"text": msg_txt}
             res = await client.post(destination, json=payload, timeout=8.0)
             print(f"[DISPATCH SLACK] Status {res.status_code} for {destination}", flush=True)
         elif channel_type == "telegram":
             payload = {
-                "event": "server.status_change",
+                "event": "ssl.expiration_warning" if is_ssl else "server.status_change",
                 "hostname": hostname,
                 "status": status_str,
                 "target_address": alert_data.get("target_address"),
+                "ssl_expiry_date": alert_data.get("ssl_expiry_date"),
+                "ssl_days_remaining": alert_data.get("ssl_days_remaining"),
                 "timestamp": alert_data.get("timestamp")
             }
             res = await client.post(destination, json=payload, timeout=8.0)
             print(f"[DISPATCH TELEGRAM] Status {res.status_code} for {destination}", flush=True)
         else:
             payload = {
-                "event": "server.status_change",
+                "event": "ssl.expiration_warning" if is_ssl else "server.status_change",
                 "server_id": alert_data.get("server_id"),
                 "hostname": hostname,
                 "server_role": alert_data.get("server_role"),
                 "target_address": alert_data.get("target_address"),
                 "status": status_str,
                 "previous_status": alert_data.get("previous_status"),
+                "ssl_expiry_date": alert_data.get("ssl_expiry_date"),
+                "ssl_days_remaining": alert_data.get("ssl_days_remaining"),
                 "timestamp": alert_data.get("timestamp"),
-                "message": f"Server '{hostname}' transitioned to {status_str}"
+                "message": alert_data.get("message", f"Server '{hostname}' alert")
             }
             res = await client.post(destination, json=payload, timeout=8.0)
             print(f"[DISPATCH WEBHOOK] Status {res.status_code} for {destination}", flush=True)
@@ -620,7 +695,9 @@ def get_servers(current_user_id: int = Depends(get_current_user), db: Session = 
             "server_role": s.server_role,
             "target_address": s.target_address,
             "active_connections": s.active_connections,
-            "is_active": s.is_active
+            "is_active": s.is_active,
+            "ssl_expiry_date": s.ssl_expiry_date,
+            "ssl_days_remaining": s.ssl_days_remaining
         }
         for s in servers
     ]
@@ -646,6 +723,8 @@ def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_
         "target_address": new_server.target_address,
         "active_connections": new_server.active_connections,
         "is_active": new_server.is_active,
+        "ssl_expiry_date": new_server.ssl_expiry_date,
+        "ssl_days_remaining": new_server.ssl_days_remaining,
         "message": "Server added"
     }
 
@@ -920,26 +999,56 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     status = 0
     cpu_usage = None
     ram_usage = None
+    ssl_expiry_date = None
+    ssl_days_remaining = None
+    ssl_error = None
     
     print(f"[PROBE] Checking server #{server_id} ('{hostname}') -> target: {target}", flush=True)
 
     try:
         if target.startswith("http://") or target.startswith("https://"):
-            try:
-                response = await client.get(target, timeout=5.0)
-                if response.status_code < 400:
-                    status = 1
-            except Exception:
-                status = 0
             parsed = urlparse(target)
             host = parsed.hostname or "127.0.0.1"
+
+            if target.startswith("https://"):
+                try:
+                    ssl_port = parsed.port or 443
+                    ssl_date, days_left, ssl_err = await asyncio.to_thread(extract_ssl_expiry, host, ssl_port)
+                    ssl_expiry_date = ssl_date
+                    ssl_days_remaining = days_left
+                    if ssl_err:
+                        ssl_error = ssl_err
+                        ssl_days_remaining = 0
+                        print(f"[SSL ERROR] Server #{server_id} ('{hostname}') TLS handshake failed: {ssl_err}", flush=True)
+                    elif ssl_days_remaining is not None:
+                        print(f"[SSL INSPECTION] Server #{server_id} ('{hostname}') TLS certificate valid until {ssl_expiry_date} ({ssl_days_remaining} day(s) remaining)", flush=True)
+                except Exception as e:
+                    ssl_error = str(e)
+                    ssl_days_remaining = 0
+                    print(f"[SSL ERROR] Server #{server_id} ('{hostname}') TLS check exception: {e}", flush=True)
+
+            try:
+                response = await client.get(target, timeout=5.0)
+                if response.status_code < 400 and not ssl_error:
+                    status = 1
+                else:
+                    status = 0
+            except (httpx.ConnectError, ssl.SSLError) as e:
+                status = 0
+                if not ssl_error and target.startswith("https://"):
+                    ssl_error = str(e)
+                    ssl_days_remaining = 0
+                    print(f"[SSL ERROR] Server #{server_id} ('{hostname}') HTTPS request failed: {e}", flush=True)
+            except Exception:
+                status = 0
         else:
             status = 1
             host = target.split(":")[0] if ":" in target else target
 
         metric_url = f"http://{host}:8001/metrics"
         try:
-            metric_response = await client.get(metric_url, timeout=3.0)
+            agent_headers = {"Authorization": f"Bearer {AGENT_AUTH_TOKEN}"}
+            metric_response = await client.get(metric_url, headers=agent_headers, timeout=3.0)
             if metric_response.status_code == 200:
                 metrics_data = metric_response.json()
                 cpu_usage = metrics_data.get("cpu_usage")
@@ -949,7 +1058,7 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     except Exception:
         status = 0
 
-    if status == 1:
+    if status == 1 and not ssl_error:
         prev_strikes = consecutive_failures.get(server_id, 0)
         consecutive_failures[server_id] = 0
         effective_active = 1
@@ -972,7 +1081,10 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
         "raw_status": status,
         "effective_active": effective_active,
         "cpu_usage": cpu_usage,
-        "ram_usage": ram_usage
+        "ram_usage": ram_usage,
+        "ssl_expiry_date": ssl_expiry_date,
+        "ssl_days_remaining": ssl_days_remaining,
+        "ssl_error": ssl_error
     }
 
 async def async_monitoring_job():
@@ -1000,7 +1112,7 @@ async def async_monitoring_job():
     print(f"[MONITORING] Starting concurrent polling cycle for {len(server_list)} server(s)...", flush=True)
 
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
-    async with httpx.AsyncClient(limits=limits, verify=False) as client:
+    async with httpx.AsyncClient(limits=limits, verify=True) as client:
         tasks = [
             check_single_server(
                 client=client,
@@ -1015,6 +1127,7 @@ async def async_monitoring_job():
 
     timestamp = datetime.now(timezone.utc).isoformat()
     transitions = []
+    ssl_warnings = []
     
     db = SessionLocal()
     try:
@@ -1025,6 +1138,8 @@ async def async_monitoring_job():
             effective_active = res["effective_active"]
             cpu = res["cpu_usage"]
             ram = res["ram_usage"]
+            ssl_expiry_date = res.get("ssl_expiry_date")
+            ssl_days_remaining = res.get("ssl_days_remaining")
             
             s_info = server_list[idx]
             prev_active = s_info["previous_active"]
@@ -1056,9 +1171,36 @@ async def async_monitoring_job():
                     "message": f"Server '{s_info.get('hostname')}' recovered to UP"
                 })
 
+            if ssl_days_remaining is not None:
+                dispatched_set = ssl_alerts_dispatched.setdefault(server_id, set())
+                if ssl_days_remaining > 30:
+                    dispatched_set.clear()
+                else:
+                    for threshold in (30, 14, 7):
+                        if ssl_days_remaining <= threshold and threshold not in dispatched_set:
+                            dispatched_set.add(threshold)
+                            print(f"[SSL WARNING] Server #{server_id} ('{s_info.get('hostname')}') certificate expires in {ssl_days_remaining} days (<= {threshold}d threshold)!", flush=True)
+                            ssl_warnings.append({
+                                "server_id": server_id,
+                                "user_id": s_info.get("user_id"),
+                                "hostname": s_info.get("hostname", f"Server-{server_id}"),
+                                "server_role": s_info.get("server_role", "Server"),
+                                "target_address": s_info.get("target_address", ""),
+                                "alert_type": "SSL_EXPIRATION_WARNING",
+                                "status": f"SSL EXPIRING IN {ssl_days_remaining} DAYS",
+                                "ssl_expiry_date": ssl_expiry_date,
+                                "ssl_days_remaining": ssl_days_remaining,
+                                "threshold_days": threshold,
+                                "timestamp": timestamp,
+                                "message": f"SSL certificate for '{s_info.get('hostname')}' expires in {ssl_days_remaining} day(s) on {ssl_expiry_date}."
+                            })
+
             server_obj = db.query(Server).filter(Server.server_id == server_id).first()
             if server_obj:
                 server_obj.is_active = effective_active
+                if ssl_expiry_date is not None:
+                    server_obj.ssl_expiry_date = ssl_expiry_date
+                    server_obj.ssl_days_remaining = ssl_days_remaining
 
             hc = HealthCheck(
                 server_id=server_id,
@@ -1087,6 +1229,9 @@ async def async_monitoring_job():
 
     if transitions:
         asyncio.create_task(dispatch_state_transition_alerts(transitions))
+
+    if ssl_warnings:
+        asyncio.create_task(dispatch_state_transition_alerts(ssl_warnings))
 
     print(f"[MONITORING] Finished cycle for {len(server_list)} server(s) at {timestamp}.", flush=True)
 
