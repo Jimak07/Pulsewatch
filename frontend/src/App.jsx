@@ -9,6 +9,14 @@ const getApiBase = () => {
   return 'http://localhost:8000';
 };
 
+const getWsUrl = () => {
+  if (typeof window !== 'undefined' && window.location.hostname) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.hostname}:8000/ws`;
+  }
+  return 'ws://localhost:8000/ws';
+};
+
 const AuthContext = createContext();
 
 export const useAuth = () => useContext(AuthContext);
@@ -1265,6 +1273,7 @@ function Dashboard() {
   const [serverRole, setServerRole] = useState("");
   const [targetAddress, setTargetAddress] = useState("");
   const [copied, setCopied] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
 
   const apiBase = getApiBase();
   const { authFetch } = useAuth();
@@ -1284,10 +1293,62 @@ function Dashboard() {
 
   useEffect(() => {
     fetchServers();
-    const intervalId = setInterval(() => {
+
+    let ws = null;
+    let reconnectTimer = null;
+    let isMounted = true;
+
+    const connectWs = () => {
+      if (!isMounted) return;
+      try {
+        const wsUrl = getWsUrl();
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          if (isMounted) setWsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            if ((data.type === 'SERVERS_UPDATE' || data.type === 'INITIAL_STATE') && Array.isArray(data.servers)) {
+              setServers(data.servers);
+            }
+          } catch (err) {
+            console.error(err);
+          }
+        };
+
+        ws.onclose = () => {
+          if (isMounted) {
+            setWsConnected(false);
+            reconnectTimer = setTimeout(connectWs, 3000);
+          }
+        };
+
+        ws.onerror = () => {
+          if (ws) ws.close();
+        };
+      } catch (err) {
+        if (isMounted) {
+          reconnectTimer = setTimeout(connectWs, 3000);
+        }
+      }
+    };
+
+    connectWs();
+
+    const fallbackInterval = setInterval(() => {
       fetchServers();
-    }, 5000);
-    return () => clearInterval(intervalId);
+    }, 15000);
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearInterval(fallbackInterval);
+      if (ws) ws.close();
+    };
   }, [apiBase]);
 
   const handleAddServer = (e) => {
@@ -1391,6 +1452,16 @@ function Dashboard() {
             <span>Listens on TCP port <strong className="text-slate-200 font-mono">8001</strong></span>
             <span>Root / Sudo Required</span>
           </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-slate-200">Monitored Infrastructure ({servers.length})</h2>
+        <div className="flex items-center space-x-2 text-xs font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
+          <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+          <span className={wsConnected ? 'text-emerald-400 font-semibold' : 'text-amber-400'}>
+            {wsConnected ? 'WebSocket Live' : 'Reconnecting...'}
+          </span>
         </div>
       </div>
 

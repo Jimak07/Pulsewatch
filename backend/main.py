@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -33,6 +33,34 @@ from database import engine, Base, init_db, get_db, SessionLocal, User, OTPCode,
 
 AGENT_AUTH_TOKEN = os.getenv("AGENT_AUTH_TOKEN", "pulsewatch-agent-secret-token-2026")
 ssl_alerts_dispatched: dict[int, set[int]] = {}
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"[WEBSOCKET] Client connected. Total active connections: {len(self.active_connections)}", flush=True)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            print(f"[WEBSOCKET] Client disconnected. Total active connections: {len(self.active_connections)}", flush=True)
+
+    async def broadcast(self, message: dict):
+        if not self.active_connections:
+            return
+        disconnected = []
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
+        for connection in disconnected:
+            self.disconnect(connection)
+
+ws_manager = ConnectionManager()
 
 def extract_ssl_expiry(host: str, port: int = 443, timeout: float = 4.0) -> tuple[Optional[str], Optional[int], Optional[str]]:
     try:
@@ -86,6 +114,44 @@ def shutdown_event():
     if scheduler.running:
         scheduler.shutdown(wait=False)
         print(f"[SCHEDULER] APScheduler background worker stopped at {datetime.now(timezone.utc).isoformat()}.", flush=True)
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        db = SessionLocal()
+        try:
+            servers = db.query(Server).all()
+            server_payload = [
+                {
+                    "server_id": s.server_id,
+                    "user_id": s.user_id,
+                    "hostname": s.hostname,
+                    "server_role": s.server_role,
+                    "target_address": s.target_address,
+                    "active_connections": s.active_connections,
+                    "is_active": s.is_active,
+                    "ssl_expiry_date": s.ssl_expiry_date,
+                    "ssl_days_remaining": s.ssl_days_remaining
+                }
+                for s in servers
+            ]
+            await websocket.send_json({
+                "type": "INITIAL_STATE",
+                "servers": server_payload,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+        finally:
+            db.close()
+
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception:
+        ws_manager.disconnect(websocket)
 
 
 security = HTTPBearer()
@@ -1232,6 +1298,47 @@ async def async_monitoring_job():
 
     if ssl_warnings:
         asyncio.create_task(dispatch_state_transition_alerts(ssl_warnings))
+
+    try:
+        db = SessionLocal()
+        try:
+            all_servers = db.query(Server).all()
+            broadcast_servers = [
+                {
+                    "server_id": s.server_id,
+                    "user_id": s.user_id,
+                    "hostname": s.hostname,
+                    "server_role": s.server_role,
+                    "target_address": s.target_address,
+                    "active_connections": s.active_connections,
+                    "is_active": s.is_active,
+                    "ssl_expiry_date": s.ssl_expiry_date,
+                    "ssl_days_remaining": s.ssl_days_remaining
+                }
+                for s in all_servers
+            ]
+        finally:
+            db.close()
+
+        metrics_map = {
+            r["server_id"]: {
+                "cpu_usage": r.get("cpu_usage"),
+                "ram_usage": r.get("ram_usage"),
+                "status": r.get("effective_active"),
+                "ssl_days_remaining": r.get("ssl_days_remaining"),
+                "ssl_expiry_date": r.get("ssl_expiry_date")
+            }
+            for r in results if isinstance(r, dict)
+        }
+
+        await ws_manager.broadcast({
+            "type": "SERVERS_UPDATE",
+            "servers": broadcast_servers,
+            "metrics": metrics_map,
+            "timestamp": timestamp
+        })
+    except Exception as e:
+        print(f"[WEBSOCKET BROADCAST ERROR] {e}", flush=True)
 
     print(f"[MONITORING] Finished cycle for {len(server_list)} server(s) at {timestamp}.", flush=True)
 
