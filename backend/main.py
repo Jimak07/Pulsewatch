@@ -29,9 +29,20 @@ from sqlalchemy.exc import IntegrityError
 load_dotenv()
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
+def require_environment_variable(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise RuntimeError(
+            f"Fatal configuration error: required environment variable {name} is missing or empty. "
+            "Set it in the process environment or backend/.env before starting PulseWatch."
+        )
+    return value.strip()
+
+AGENT_AUTH_TOKEN = require_environment_variable("AGENT_AUTH_TOKEN")
+JWT_SECRET_KEY = require_environment_variable("JWT_SECRET_KEY")
+
 from database import engine, Base, init_db, get_db, SessionLocal, User, OTPCode, Server, NotificationChannel, HealthCheck, MetricRaw, MetricHourly
 
-AGENT_AUTH_TOKEN = os.getenv("AGENT_AUTH_TOKEN", "pulsewatch-agent-secret-token-2026")
 ssl_alerts_dispatched: dict[int, set[int]] = {}
 
 class ConnectionManager:
@@ -95,12 +106,11 @@ def extract_ssl_expiry(host: str, port: int = 443, timeout: float = 4.0) -> tupl
         return None, None, None
 
 
-SECRET_KEY = "pulsewatch-multi-tenant-jwt-secret-key-32-chars-long"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 def decode_access_token(token: str) -> int:
-    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
     user_id = payload.get("user_id")
     if user_id is None:
         raise jwt.InvalidTokenError("Token is missing user_id")
@@ -231,8 +241,12 @@ def generate_otp_code() -> str:
     return f"{random.randint(100000, 999999)}"
 
 def send_actual_otp_email(to_email: str, code: str):
-    smtp_email = os.getenv("SMTP_EMAIL", "").strip()
-    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    if smtp_email:
+        smtp_email = smtp_email.strip()
+    if smtp_password:
+        smtp_password = smtp_password.strip()
     
     if not smtp_email or not smtp_password:
         print(f"[MOCK EMAIL FALLBACK] Sent OTP {code} to {to_email} (Configure SMTP_EMAIL and SMTP_PASSWORD in .env)", flush=True)
@@ -274,8 +288,12 @@ def send_actual_otp_email(to_email: str, code: str):
         print(f"[SMTP ERROR] Failed to send email to {to_email}: {e}", flush=True)
 
 def send_alert_email(to_email: str, alert_data: dict):
-    smtp_email = os.getenv("SMTP_EMAIL", "").strip()
-    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    if smtp_email:
+        smtp_email = smtp_email.strip()
+    if smtp_password:
+        smtp_password = smtp_password.strip()
     
     if not smtp_email or not smtp_password:
         print(f"[MOCK EMAIL FALLBACK] Alert to {to_email}: {alert_data.get('message')}", flush=True)
@@ -500,7 +518,7 @@ def create_access_token(user_id: int, username: str) -> str:
         "sub": username,
         "exp": expire
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> int:
     token = credentials.credentials

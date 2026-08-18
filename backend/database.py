@@ -10,8 +10,13 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL is missing from environment variables!")
+if DATABASE_URL is None or not DATABASE_URL.strip():
+    raise RuntimeError(
+        "Fatal configuration error: required environment variable DATABASE_URL is missing or empty. "
+        "Set it in the process environment or backend/.env before starting PulseWatch."
+    )
+
+DATABASE_URL = DATABASE_URL.strip()
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)

@@ -9,7 +9,16 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 load_dotenv()
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-AGENT_AUTH_TOKEN = os.getenv("AGENT_AUTH_TOKEN", "pulsewatch-agent-secret-token-2026")
+def require_environment_variable(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise RuntimeError(
+            f"Fatal configuration error: required environment variable {name} is missing or empty. "
+            "Set it in the process environment or a .env file next to metric_agent.py before starting the agent."
+        )
+    return value.strip()
+
+AGENT_AUTH_TOKEN = require_environment_variable("AGENT_AUTH_TOKEN")
 
 class MetricHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -51,7 +60,6 @@ class MetricHandler(BaseHTTPRequestHandler):
         pass
 
 def run(port=8001):
-    global AGENT_AUTH_TOKEN
     server_address = ("0.0.0.0", port)
     httpd = HTTPServer(server_address, MetricHandler)
     print(f"PulseWatch Hardened Metric Agent running on port {port} (Token authentication enabled)", flush=True)
@@ -68,12 +76,11 @@ if __name__ == "__main__":
     idx = 0
     while idx < len(args):
         arg = args[idx]
-        if arg == "--token" and idx + 1 < len(args):
-            AGENT_AUTH_TOKEN = args[idx + 1]
-            idx += 2
-        elif arg.isdigit():
+        if arg.isdigit():
             port = int(arg)
             idx += 1
         else:
-            idx += 1
+            raise SystemExit(
+                "Usage: metric_agent.py [port]. Configure AGENT_AUTH_TOKEN through the environment or .env file."
+            )
     run(port=port)
