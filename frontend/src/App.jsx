@@ -9,12 +9,13 @@ const getApiBase = () => {
   return 'http://localhost:8000';
 };
 
-const getWsUrl = () => {
+const getWsUrl = (token) => {
+  const encodedToken = encodeURIComponent(token || '');
   if (typeof window !== 'undefined' && window.location.hostname) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.hostname}:8000/ws`;
+    return `${protocol}//${window.location.hostname}:8000/ws?token=${encodedToken}`;
   }
-  return 'ws://localhost:8000/ws';
+  return `ws://localhost:8000/ws?token=${encodedToken}`;
 };
 
 const AuthContext = createContext();
@@ -1276,7 +1277,7 @@ function Dashboard() {
   const [wsConnected, setWsConnected] = useState(false);
 
   const apiBase = getApiBase();
-  const { authFetch } = useAuth();
+  const { token, authFetch } = useAuth();
   const currentHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
   const installCmd = `curl -fsSL http://${currentHost}:8000/install.sh | bash -s http://${currentHost}:8000/agent/metric_agent.py`;
 
@@ -1299,9 +1300,9 @@ function Dashboard() {
     let isMounted = true;
 
     const connectWs = () => {
-      if (!isMounted) return;
+      if (!isMounted || !token) return;
       try {
-        const wsUrl = getWsUrl();
+        const wsUrl = getWsUrl(token);
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
@@ -1330,7 +1331,7 @@ function Dashboard() {
         ws.onerror = () => {
           if (ws) ws.close();
         };
-      } catch (err) {
+      } catch {
         if (isMounted) {
           reconnectTimer = setTimeout(connectWs, 3000);
         }
@@ -1349,7 +1350,7 @@ function Dashboard() {
       clearInterval(fallbackInterval);
       if (ws) ws.close();
     };
-  }, [apiBase]);
+  }, [apiBase, token]);
 
   const handleAddServer = (e) => {
     e.preventDefault();

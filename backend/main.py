@@ -36,29 +36,38 @@ ssl_alerts_dispatched: dict[int, set[int]] = {}
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: dict[int, list[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
-        print(f"[WEBSOCKET] Client connected. Total active connections: {len(self.active_connections)}", flush=True)
+        self.active_connections.setdefault(user_id, []).append(websocket)
+        total_connections = sum(len(connections) for connections in self.active_connections.values())
+        print(f"[WEBSOCKET] User #{user_id} connected. Total active connections: {total_connections}", flush=True)
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            print(f"[WEBSOCKET] Client disconnected. Total active connections: {len(self.active_connections)}", flush=True)
+    def disconnect(self, user_id: int, websocket: WebSocket):
+        user_connections = self.active_connections.get(user_id, [])
+        if websocket in user_connections:
+            user_connections.remove(websocket)
+        if not user_connections:
+            self.active_connections.pop(user_id, None)
+        total_connections = sum(len(connections) for connections in self.active_connections.values())
+        print(f"[WEBSOCKET] User #{user_id} disconnected. Total active connections: {total_connections}", flush=True)
 
-    async def broadcast(self, message: dict):
-        if not self.active_connections:
+    def connected_user_ids(self) -> list[int]:
+        return list(self.active_connections.keys())
+
+    async def send_to_user(self, user_id: int, message: dict):
+        user_connections = list(self.active_connections.get(user_id, []))
+        if not user_connections:
             return
         disconnected = []
-        for connection in list(self.active_connections):
+        for connection in user_connections:
             try:
                 await connection.send_json(message)
             except Exception:
                 disconnected.append(connection)
         for connection in disconnected:
-            self.disconnect(connection)
+            self.disconnect(user_id, connection)
 
 ws_manager = ConnectionManager()
 
@@ -90,6 +99,13 @@ SECRET_KEY = "pulsewatch-multi-tenant-jwt-secret-key-32-chars-long"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
+def decode_access_token(token: str) -> int:
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    user_id = payload.get("user_id")
+    if user_id is None:
+        raise jwt.InvalidTokenError("Token is missing user_id")
+    return int(user_id)
+
 app = FastAPI()
 
 app.add_middleware(
@@ -117,11 +133,22 @@ def shutdown_event():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401, reason="Authentication token required")
+        return
+
+    try:
+        user_id = decode_access_token(token)
+    except (jwt.InvalidTokenError, ValueError, TypeError):
+        await websocket.close(code=4401, reason="Invalid or expired authentication token")
+        return
+
+    await ws_manager.connect(user_id, websocket)
     try:
         db = SessionLocal()
         try:
-            servers = db.query(Server).all()
+            servers = db.query(Server).filter(Server.user_id == user_id).all()
             server_payload = [
                 {
                     "server_id": s.server_id,
@@ -149,9 +176,9 @@ async def websocket_endpoint(websocket: WebSocket):
             if data == "ping":
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        ws_manager.disconnect(user_id, websocket)
     except Exception:
-        ws_manager.disconnect(websocket)
+        ws_manager.disconnect(user_id, websocket)
 
 
 security = HTTPBearer()
@@ -478,16 +505,8 @@ def create_access_token(user_id: int, username: str) -> str:
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> int:
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("user_id")
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-        return user_id
-    except Exception:
+        return decode_access_token(token)
+    except (jwt.InvalidTokenError, ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -1300,26 +1319,6 @@ async def async_monitoring_job():
         asyncio.create_task(dispatch_state_transition_alerts(ssl_warnings))
 
     try:
-        db = SessionLocal()
-        try:
-            all_servers = db.query(Server).all()
-            broadcast_servers = [
-                {
-                    "server_id": s.server_id,
-                    "user_id": s.user_id,
-                    "hostname": s.hostname,
-                    "server_role": s.server_role,
-                    "target_address": s.target_address,
-                    "active_connections": s.active_connections,
-                    "is_active": s.is_active,
-                    "ssl_expiry_date": s.ssl_expiry_date,
-                    "ssl_days_remaining": s.ssl_days_remaining
-                }
-                for s in all_servers
-            ]
-        finally:
-            db.close()
-
         metrics_map = {
             r["server_id"]: {
                 "cpu_usage": r.get("cpu_usage"),
@@ -1331,12 +1330,39 @@ async def async_monitoring_job():
             for r in results if isinstance(r, dict)
         }
 
-        await ws_manager.broadcast({
-            "type": "SERVERS_UPDATE",
-            "servers": broadcast_servers,
-            "metrics": metrics_map,
-            "timestamp": timestamp
-        })
+        for user_id in ws_manager.connected_user_ids():
+            db = SessionLocal()
+            try:
+                user_servers = db.query(Server).filter(Server.user_id == user_id).all()
+                broadcast_servers = [
+                    {
+                        "server_id": s.server_id,
+                        "user_id": s.user_id,
+                        "hostname": s.hostname,
+                        "server_role": s.server_role,
+                        "target_address": s.target_address,
+                        "active_connections": s.active_connections,
+                        "is_active": s.is_active,
+                        "ssl_expiry_date": s.ssl_expiry_date,
+                        "ssl_days_remaining": s.ssl_days_remaining
+                    }
+                    for s in user_servers
+                ]
+                user_server_ids = {s.server_id for s in user_servers}
+                user_metrics = {
+                    server_id: metric
+                    for server_id, metric in metrics_map.items()
+                    if server_id in user_server_ids
+                }
+            finally:
+                db.close()
+
+            await ws_manager.send_to_user(user_id, {
+                "type": "SERVERS_UPDATE",
+                "servers": broadcast_servers,
+                "metrics": user_metrics,
+                "timestamp": timestamp
+            })
     except Exception as e:
         print(f"[WEBSOCKET BROADCAST ERROR] {e}", flush=True)
 
