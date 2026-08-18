@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
-from urllib.parse import urlparse
 import bcrypt
 import jwt
 import random
@@ -42,6 +41,7 @@ AGENT_AUTH_TOKEN = require_environment_variable("AGENT_AUTH_TOKEN")
 JWT_SECRET_KEY = require_environment_variable("JWT_SECRET_KEY")
 
 from database import engine, Base, init_db, get_db, SessionLocal, User, OTPCode, Server, NotificationChannel, HealthCheck, MetricRaw, MetricHourly
+from target_security import UnsafeTargetError, validate_and_resolve_target
 
 ssl_alerts_dispatched: dict[int, set[int]] = {}
 
@@ -82,11 +82,11 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
-def extract_ssl_expiry(host: str, port: int = 443, timeout: float = 4.0) -> tuple[Optional[str], Optional[int], Optional[str]]:
+def extract_ssl_expiry(connect_host: str, server_hostname: str, port: int = 443, timeout: float = 4.0) -> tuple[Optional[str], Optional[int], Optional[str]]:
     try:
         ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+        with socket.create_connection((connect_host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=server_hostname) as ssock:
                 cert = ssock.getpeercert()
                 if not cert or "notAfter" not in cert:
                     return None, None, None
@@ -807,11 +807,16 @@ def get_servers(current_user_id: int = Depends(get_current_user), db: Session = 
 
 @app.post("/servers")
 def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        validated_target = validate_and_resolve_target(server.target_address)
+    except UnsafeTargetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     new_server = Server(
         user_id=current_user_id,
         hostname=server.hostname.strip(),
         server_role=server.server_role.strip(),
-        target_address=server.target_address.strip(),
+        target_address=validated_target.original_url,
         active_connections=0,
         is_active=1
     )
@@ -1109,55 +1114,65 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     print(f"[PROBE] Checking server #{server_id} ('{hostname}') -> target: {target}", flush=True)
 
     try:
-        if target.startswith("http://") or target.startswith("https://"):
-            parsed = urlparse(target)
-            host = parsed.hostname or "127.0.0.1"
+        validated_target = await asyncio.to_thread(validate_and_resolve_target, target)
 
-            if target.startswith("https://"):
-                try:
-                    ssl_port = parsed.port or 443
-                    ssl_date, days_left, ssl_err = await asyncio.to_thread(extract_ssl_expiry, host, ssl_port)
-                    ssl_expiry_date = ssl_date
-                    ssl_days_remaining = days_left
-                    if ssl_err:
-                        ssl_error = ssl_err
-                        ssl_days_remaining = 0
-                        print(f"[SSL ERROR] Server #{server_id} ('{hostname}') TLS handshake failed: {ssl_err}", flush=True)
-                    elif ssl_days_remaining is not None:
-                        print(f"[SSL INSPECTION] Server #{server_id} ('{hostname}') TLS certificate valid until {ssl_expiry_date} ({ssl_days_remaining} day(s) remaining)", flush=True)
-                except Exception as e:
-                    ssl_error = str(e)
-                    ssl_days_remaining = 0
-                    print(f"[SSL ERROR] Server #{server_id} ('{hostname}') TLS check exception: {e}", flush=True)
-
+        if validated_target.scheme == "https":
             try:
-                response = await client.get(target, timeout=5.0)
-                if response.status_code < 400 and not ssl_error:
-                    status = 1
-                else:
-                    status = 0
-            except (httpx.ConnectError, ssl.SSLError) as e:
-                status = 0
-                if not ssl_error and target.startswith("https://"):
-                    ssl_error = str(e)
+                ssl_date, days_left, ssl_err = await asyncio.to_thread(
+                    extract_ssl_expiry,
+                    validated_target.resolved_ip,
+                    validated_target.hostname,
+                    validated_target.port,
+                )
+                ssl_expiry_date = ssl_date
+                ssl_days_remaining = days_left
+                if ssl_err:
+                    ssl_error = ssl_err
                     ssl_days_remaining = 0
-                    print(f"[SSL ERROR] Server #{server_id} ('{hostname}') HTTPS request failed: {e}", flush=True)
-            except Exception:
-                status = 0
-        else:
-            status = 1
-            host = target.split(":")[0] if ":" in target else target
+                    print(f"[SSL ERROR] Server #{server_id} ('{hostname}') TLS handshake failed: {ssl_err}", flush=True)
+                elif ssl_days_remaining is not None:
+                    print(f"[SSL INSPECTION] Server #{server_id} ('{hostname}') TLS certificate valid until {ssl_expiry_date} ({ssl_days_remaining} day(s) remaining)", flush=True)
+            except Exception as e:
+                ssl_error = str(e)
+                ssl_days_remaining = 0
+                print(f"[SSL ERROR] Server #{server_id} ('{hostname}') TLS check exception: {e}", flush=True)
 
-        metric_url = f"http://{host}:8001/metrics"
+        try:
+            request = client.build_request(
+                "GET",
+                validated_target.pinned_url(),
+                headers={"Host": validated_target.host_header()},
+                timeout=5.0,
+                extensions={"sni_hostname": validated_target.hostname},
+            )
+            response = await client.send(request, follow_redirects=False)
+            if response.status_code < 300 and not ssl_error:
+                status = 1
+        except (httpx.ConnectError, ssl.SSLError) as e:
+            if not ssl_error and validated_target.scheme == "https":
+                ssl_error = str(e)
+                ssl_days_remaining = 0
+                print(f"[SSL ERROR] Server #{server_id} ('{hostname}') HTTPS request failed: {e}", flush=True)
+
         try:
             agent_headers = {"Authorization": f"Bearer {AGENT_AUTH_TOKEN}"}
-            metric_response = await client.get(metric_url, headers=agent_headers, timeout=3.0)
+            agent_headers["Host"] = validated_target.host_header(port=8001, scheme="http")
+            metric_request = client.build_request(
+                "GET",
+                validated_target.pinned_url(scheme="http", port=8001, path="/metrics", query=""),
+                headers=agent_headers,
+                timeout=3.0,
+            )
+            metric_response = await client.send(metric_request, follow_redirects=False)
             if metric_response.status_code == 200:
                 metrics_data = metric_response.json()
                 cpu_usage = metrics_data.get("cpu_usage")
                 ram_usage = metrics_data.get("ram_usage")
         except Exception:
             pass
+    except UnsafeTargetError as e:
+        print(f"[PROBE BLOCKED] Server #{server_id} ('{hostname}') target rejected: {e}", flush=True)
+        status = 0
     except Exception:
         status = 0
 
@@ -1214,7 +1229,10 @@ async def async_monitoring_job():
 
     print(f"[MONITORING] Starting concurrent polling cycle for {len(server_list)} server(s)...", flush=True)
 
-    limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
+    # Requests are pinned to resolved IPs while retaining the original Host/SNI.
+    # Disable keep-alive reuse so a connection opened for one hostname cannot be
+    # reused for another hostname that resolves to the same IP.
+    limits = httpx.Limits(max_keepalive_connections=0, max_connections=100)
     async with httpx.AsyncClient(limits=limits, verify=True) as client:
         tasks = [
             check_single_server(
