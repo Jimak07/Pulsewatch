@@ -39,9 +39,16 @@ def require_environment_variable(name: str) -> str:
 
 AGENT_AUTH_TOKEN = require_environment_variable("AGENT_AUTH_TOKEN")
 JWT_SECRET_KEY = require_environment_variable("JWT_SECRET_KEY")
+ALLOWED_ORIGINS_RAW = require_environment_variable("ALLOWED_ORIGINS")
 
 from database import engine, Base, init_db, get_db, SessionLocal, User, OTPCode, Server, NotificationChannel, HealthCheck, MetricRaw, MetricHourly
+from cors_config import CorsConfigurationError, normalize_origin, parse_allowed_origins
 from target_security import UnsafeTargetError, validate_and_resolve_target
+
+try:
+    ALLOWED_ORIGINS = parse_allowed_origins(ALLOWED_ORIGINS_RAW)
+except CorsConfigurationError as exc:
+    raise RuntimeError(f"Fatal configuration error: invalid ALLOWED_ORIGINS: {exc}") from exc
 
 ssl_alerts_dispatched: dict[int, set[int]] = {}
 
@@ -120,18 +127,78 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 scheduler = BackgroundScheduler()
+SCHEDULER_LOCK_ID = 781245903
+scheduler_lock_connection = None
+scheduler_lock_acquired = False
+
+
+def acquire_scheduler_lock() -> bool:
+    """Allow only one scheduler leader when multiple app processes share Postgres."""
+    global scheduler_lock_connection, scheduler_lock_acquired
+
+    if engine.url.get_backend_name() != "postgresql":
+        print(
+            "[SCHEDULER] Database advisory locking is unavailable for this backend. "
+            "The production container is intentionally configured with one Uvicorn worker.",
+            flush=True,
+        )
+        scheduler_lock_acquired = True
+        return True
+
+    connection = None
+    try:
+        connection = engine.raw_connection()
+        cursor = connection.cursor()
+        cursor.execute("SELECT pg_try_advisory_lock(%s)", (SCHEDULER_LOCK_ID,))
+        acquired = bool(cursor.fetchone()[0])
+        cursor.close()
+        if acquired:
+            scheduler_lock_connection = connection
+            scheduler_lock_acquired = True
+            print("[SCHEDULER] Acquired PostgreSQL scheduler leader lock.", flush=True)
+            return True
+
+        connection.close()
+        connection = None
+        print("[SCHEDULER] Another process owns the scheduler leader lock; scheduler disabled here.", flush=True)
+        return False
+    except Exception as exc:
+        if connection is not None:
+            connection.close()
+        if scheduler_lock_connection is not None:
+            scheduler_lock_connection.close()
+            scheduler_lock_connection = None
+        print(f"[SCHEDULER] Failed to acquire leader lock; scheduler disabled: {exc}", flush=True)
+        return False
+
+
+def release_scheduler_lock() -> None:
+    global scheduler_lock_connection, scheduler_lock_acquired
+    if scheduler_lock_connection is None:
+        scheduler_lock_acquired = False
+        return
+    try:
+        cursor = scheduler_lock_connection.cursor()
+        cursor.execute("SELECT pg_advisory_unlock(%s)", (SCHEDULER_LOCK_ID,))
+        cursor.close()
+    except Exception as exc:
+        print(f"[SCHEDULER] Failed to release leader lock cleanly: {exc}", flush=True)
+    finally:
+        scheduler_lock_connection.close()
+        scheduler_lock_connection = None
+        scheduler_lock_acquired = False
 
 @app.on_event("startup")
 def startup_event():
     Base.metadata.create_all(bind=engine)
-    if not scheduler.running:
+    if acquire_scheduler_lock() and not scheduler.running:
         scheduler.start()
         print(f"[SCHEDULER] APScheduler background monitoring worker started successfully at {datetime.now(timezone.utc).isoformat()}.", flush=True)
 
@@ -140,9 +207,21 @@ def shutdown_event():
     if scheduler.running:
         scheduler.shutdown(wait=False)
         print(f"[SCHEDULER] APScheduler background worker stopped at {datetime.now(timezone.utc).isoformat()}.", flush=True)
+    if scheduler_lock_acquired:
+        release_scheduler_lock()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    request_origin = websocket.headers.get("origin")
+    try:
+        normalized_origin = normalize_origin(request_origin)
+    except CorsConfigurationError:
+        await websocket.close(code=4403, reason="Origin not allowed")
+        return
+    if normalized_origin not in ALLOWED_ORIGINS:
+        await websocket.close(code=4403, reason="Origin not allowed")
+        return
+
     token = websocket.query_params.get("token")
     if not token:
         await websocket.close(code=4401, reason="Authentication token required")
@@ -1455,7 +1534,8 @@ scheduler.add_job(
     'interval', 
     seconds=30, 
     misfire_grace_time=15,
-    max_instances=5,
+    max_instances=1,
+    coalesce=True,
     next_run_time=datetime.now(timezone.utc)
 )
 scheduler.add_job(
@@ -1464,6 +1544,3 @@ scheduler.add_job(
     hour=2,
     minute=0
 )
-if not scheduler.running:
-    scheduler.start()
-    print(f"[SCHEDULER] APScheduler background monitoring worker started at module initialization ({datetime.now(timezone.utc).isoformat()}).", flush=True)
