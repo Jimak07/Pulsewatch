@@ -138,7 +138,10 @@ def set_session_cookie(response: Response, user: User) -> None:
         value=token,
         httponly=True,
         secure=True,
-        samesite="lax",
+        # The frontend and API are deployed on different sites (for example,
+        # Vercel and Render), so the session cookie must be explicitly allowed
+        # in cross-site requests. Secure is required by browsers for SameSite=None.
+        samesite="none",
         max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
         path="/",
     )
@@ -818,7 +821,7 @@ def login_verify(request: Request, response: Response, data: LoginVerify, db: Se
 
 @app.post("/logout")
 def logout(response: Response):
-    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="none")
     return {"message": "Signed out successfully"}
 
 @app.get("/users/me")
