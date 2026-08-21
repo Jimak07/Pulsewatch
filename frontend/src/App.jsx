@@ -304,9 +304,15 @@ function Settings() {
   const apiBase = getApiBase();
 
   const [email, setEmail] = useState('');
+  const [emailCurrentPassword, setEmailCurrentPassword] = useState('');
+  const [emailOtp, setEmailOtp] = useState('');
   const [is2faEnabled, setIs2faEnabled] = useState(false);
+  const [twoFaCurrentPassword, setTwoFaCurrentPassword] = useState('');
+  const [twoFaOtp, setTwoFaOtp] = useState('');
   const [emailLoading, setEmailLoading] = useState(false);
+  const [emailOtpLoading, setEmailOtpLoading] = useState(false);
   const [twoFaLoading, setTwoFaLoading] = useState(false);
+  const [twoFaOtpLoading, setTwoFaOtpLoading] = useState(false);
   const [emailSuccess, setEmailSuccess] = useState('');
   const [emailError, setEmailError] = useState('');
   const [twoFaSuccess, setTwoFaSuccess] = useState('');
@@ -373,7 +379,7 @@ function Settings() {
       const res = await authFetch(`${apiBase}/users/email`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email, current_password: emailCurrentPassword, otp_code: emailOtp })
       });
 
       const data = await res.json();
@@ -381,6 +387,8 @@ function Settings() {
         throw new Error(data.detail || 'Failed to update email');
       }
       setEmailSuccess(data.message || 'Email updated successfully');
+      setEmailCurrentPassword('');
+      setEmailOtp('');
     } catch (err) {
       setEmailError(err.message || 'Error updating email');
     } finally {
@@ -397,7 +405,11 @@ function Settings() {
       const res = await authFetch(`${apiBase}/users/2fa-toggle`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_2fa_enabled: !is2faEnabled })
+        body: JSON.stringify({
+          is_2fa_enabled: !is2faEnabled,
+          current_password: twoFaCurrentPassword,
+          otp_code: twoFaOtp
+        })
       });
 
       const data = await res.json();
@@ -406,10 +418,31 @@ function Settings() {
       }
       setIs2faEnabled(Boolean(data.is_2fa_enabled));
       setTwoFaSuccess(data.message || '2FA preference updated');
+      setTwoFaCurrentPassword('');
+      setTwoFaOtp('');
     } catch (err) {
       setTwoFaError(err.message || 'Error updating 2FA preference');
     } finally {
       setTwoFaLoading(false);
+    }
+  };
+
+  const requestSensitiveChangeOtp = async (setLoading, setError, setSuccess) => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await authFetch(`${apiBase}/users/request-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_settings' })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to send verification code');
+      setSuccess(data.message || 'Verification code sent');
+    } catch (err) {
+      setError(err.message || 'Failed to send verification code');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -678,6 +711,36 @@ function Settings() {
                 />
               </div>
 
+              <input
+                type="password"
+                required
+                value={emailCurrentPassword}
+                onChange={(e) => setEmailCurrentPassword(e.target.value)}
+                placeholder="Current password"
+                autoComplete="current-password"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500 text-sm"
+              />
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  value={emailOtp}
+                  onChange={(e) => setEmailOtp(e.target.value)}
+                  placeholder="6-digit verification code"
+                  inputMode="numeric"
+                  className="min-w-0 flex-1 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500 text-sm"
+                />
+                <button
+                  type="button"
+                  disabled={emailOtpLoading}
+                  onClick={() => requestSensitiveChangeOtp(setEmailOtpLoading, setEmailError, setEmailSuccess)}
+                  className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white px-3 rounded-lg text-xs"
+                >
+                  {emailOtpLoading ? 'Sending...' : 'Send Code'}
+                </button>
+              </div>
+
               <button
                 type="submit"
                 disabled={emailLoading}
@@ -713,6 +776,36 @@ function Settings() {
                   {twoFaError}
                 </div>
               )}
+
+              <input
+                type="password"
+                required
+                value={twoFaCurrentPassword}
+                onChange={(e) => setTwoFaCurrentPassword(e.target.value)}
+                placeholder="Current password"
+                autoComplete="current-password"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-purple-500 text-sm"
+              />
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  value={twoFaOtp}
+                  onChange={(e) => setTwoFaOtp(e.target.value)}
+                  placeholder="6-digit verification code"
+                  inputMode="numeric"
+                  className="min-w-0 flex-1 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-purple-500 text-sm"
+                />
+                <button
+                  type="button"
+                  disabled={twoFaOtpLoading}
+                  onClick={() => requestSensitiveChangeOtp(setTwoFaOtpLoading, setTwoFaError, setTwoFaSuccess)}
+                  className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white px-3 rounded-lg text-xs"
+                >
+                  {twoFaOtpLoading ? 'Sending...' : 'Send Code'}
+                </button>
+              </div>
             </div>
 
             <button
@@ -1471,8 +1564,6 @@ function Analytics() {
   const [isCpuOpen, setIsCpuOpen] = useState(true);
   const [isRamOpen, setIsRamOpen] = useState(true);
   const [retentionStats, setRetentionStats] = useState(null);
-  const [isRollupRunning, setIsRollupRunning] = useState(false);
-  const [rollupFeedback, setRollupFeedback] = useState("");
 
   const apiBase = getApiBase();
   const { authFetch } = useAuth();
@@ -1533,23 +1624,6 @@ function Analytics() {
       })
       .catch(err => console.error(err));
   }, [selectedServer, graphHours, apiBase]);
-
-  const handleTriggerRollup = async () => {
-    setIsRollupRunning(true);
-    setRollupFeedback("");
-    try {
-      const res = await authFetch(`${apiBase}/system/trigger-rollup`, { method: 'POST' });
-      const data = await res.json();
-      setRollupFeedback(data.message || "Rollup executed");
-      fetchRetentionStats();
-    } catch (err) {
-      console.error(err);
-      setRollupFeedback("Error executing rollup");
-    } finally {
-      setIsRollupRunning(false);
-      setTimeout(() => setRollupFeedback(""), 4000);
-    }
-  };
 
   const latestMetrics = useMemo(() => {
     if (!graphData || graphData.length === 0) return { cpu: null, ram: null };
@@ -1811,20 +1885,6 @@ function Analytics() {
             <p className="text-sm text-slate-400 mt-1">
               Automated 3-tier lifecycle: 30-day raw downsampling, 15-month hourly rollups, and auto-purge.
             </p>
-          </div>
-          <div className="flex items-center space-x-3">
-            {rollupFeedback && (
-              <span className="text-xs text-green-400 font-mono bg-green-950/60 border border-green-800/80 px-2.5 py-1 rounded">
-                {rollupFeedback}
-              </span>
-            )}
-            <button
-              onClick={handleTriggerRollup}
-              disabled={isRollupRunning}
-              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors flex items-center space-x-2 shrink-0"
-            >
-              <span>{isRollupRunning ? "Running Rollup..." : "⚡ Run Rollup Now"}</span>
-            </button>
           </div>
         </div>
 

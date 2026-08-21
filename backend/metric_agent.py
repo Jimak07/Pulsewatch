@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import json
 import sys
 import os
+import hmac
 from pathlib import Path
 import psutil
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -22,11 +23,11 @@ AGENT_AUTH_TOKEN = require_environment_variable("AGENT_AUTH_TOKEN")
 
 class MetricHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/", "/metrics"):
+        if self.path in ("/", "/metrics", "/api/metrics"):
             auth_header = self.headers.get("Authorization", "").strip()
             expected_bearer = f"Bearer {AGENT_AUTH_TOKEN}"
             
-            if auth_header != expected_bearer and auth_header != AGENT_AUTH_TOKEN:
+            if not hmac.compare_digest(auth_header, expected_bearer):
                 self.send_response(401)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")

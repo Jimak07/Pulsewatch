@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -12,6 +12,8 @@ import socket
 import ssl
 import smtplib
 import secrets
+import logging
+import uuid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -21,7 +23,7 @@ import httpx
 from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, delete
 from sqlalchemy.exc import IntegrityError
 
 load_dotenv()
@@ -119,6 +121,7 @@ SESSION_COOKIE_NAME = "pulsewatch_session"
 AUTH_RATE_LIMIT = 5
 AUTH_RATE_WINDOW_SECONDS = 300
 auth_rate_limiter = InMemoryRateLimiter(AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
+logger = logging.getLogger("pulsewatch")
 
 def decode_access_token(token: str) -> tuple[int, int]:
     payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
@@ -162,7 +165,35 @@ def record_auth_failure(request: Request, action: str) -> None:
 def clear_auth_failures(request: Request, action: str) -> None:
     auth_rate_limiter.reset(auth_rate_key(request, action))
 
+def masked_internal_error(context: str, exc: Exception) -> HTTPException:
+    correlation_id = str(uuid.uuid4())
+    logger.error(
+        "%s correlation_id=%s",
+        context,
+        correlation_id,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    return HTTPException(
+        status_code=500,
+        detail=f"An unexpected server error occurred. Reference: {correlation_id}",
+    )
+
 app = FastAPI()
+
+@app.exception_handler(Exception)
+async def handle_unexpected_exception(request: Request, exc: Exception):
+    correlation_id = str(uuid.uuid4())
+    logger.exception(
+        "Unhandled application error correlation_id=%s method=%s path=%s",
+        correlation_id,
+        request.method,
+        request.url.path,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected server error occurred", "correlation_id": correlation_id},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -326,12 +357,16 @@ class LoginVerify(BaseModel):
 
 class Toggle2FA(BaseModel):
     is_2fa_enabled: Optional[bool] = None
+    current_password: Optional[str] = None
+    otp_code: Optional[str] = None
 
 class RequestOTP(BaseModel):
     action: Optional[str] = "update_settings"
 
 class UpdateEmail(BaseModel):
     email: str
+    current_password: Optional[str] = None
+    otp_code: Optional[str] = None
 
 class UpdateUsername(BaseModel):
     username: str
@@ -634,6 +669,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
+def consume_otp(db: Session, user_id: int, code: str, action: str) -> bool:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    deleted_otp_id = db.execute(
+        delete(OTPCode).where(
+            OTPCode.user_id == user_id,
+            OTPCode.code == code,
+            OTPCode.action == action,
+            OTPCode.expires_at > now_iso,
+        ).returning(OTPCode.id)
+    ).scalars().first()
+    return deleted_otp_id is not None
+
 def create_access_token(user_id: int, username: str, session_version: int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
@@ -688,9 +735,9 @@ def register(request: Request, response: Response, auth: UserAuth, db: Session =
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=400, detail="Username already exists")
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail="Unable to create account")
+        raise masked_internal_error("Unable to create account", exc) from exc
         
     set_session_cookie(response, new_user)
     return {
@@ -754,19 +801,12 @@ def login_verify(request: Request, response: Response, data: LoginVerify, db: Se
         record_auth_failure(request, "verify-otp")
         raise HTTPException(status_code=400, detail="Invalid or expired 2FA code")
         
-    now_iso = datetime.now(timezone.utc).isoformat()
-    otp = db.query(OTPCode).filter(
-        OTPCode.user_id == user.id,
-        OTPCode.code == clean_otp,
-        OTPCode.action == "login",
-        OTPCode.expires_at > now_iso
-    ).first()
+    otp = consume_otp(db, user.id, clean_otp, "login")
     
     if not otp:
         record_auth_failure(request, "verify-otp")
         raise HTTPException(status_code=400, detail="Invalid or expired 2FA code")
         
-    db.delete(otp)
     db.commit()
     clear_auth_failures(request, "verify-otp")
     
@@ -794,21 +834,44 @@ def get_user_profile(current_user_id: int = Depends(get_current_user), db: Sessi
     }
 
 @app.put("/users/email")
-def update_email(data: UpdateEmail, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_email(request: Request, response: Response, data: UpdateEmail, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "settings-otp", record_attempt=False)
     clean_email = data.email.strip()
+    clean_otp = (data.otp_code or "").strip()
+    if not clean_email or not data.current_password or not clean_otp:
+        raise HTTPException(status_code=400, detail="Email, current password, and verification code are required")
     user = db.query(User).filter(User.id == current_user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if not verify_password(data.current_password, user.password_hash):
+        record_auth_failure(request, "settings-otp")
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if not consume_otp(db, current_user_id, clean_otp, "update_settings"):
+        record_auth_failure(request, "settings-otp")
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
     user.email = clean_email
+    user.session_version += 1
     db.commit()
+    db.refresh(user)
+    clear_auth_failures(request, "settings-otp")
+    set_session_cookie(response, user)
     return {"message": "Email updated successfully", "email": clean_email}
 
 @app.put("/users/2fa-toggle")
-def toggle_2fa(response: Response, data: Optional[Toggle2FA] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def toggle_2fa(request: Request, response: Response, data: Optional[Toggle2FA] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "settings-otp", record_attempt=False)
+    if data is None or not data.current_password or not (data.otp_code or "").strip():
+        raise HTTPException(status_code=400, detail="Current password and verification code are required")
     user = db.query(User).filter(User.id == current_user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if data is not None and data.is_2fa_enabled is not None:
+    if not verify_password(data.current_password, user.password_hash):
+        record_auth_failure(request, "settings-otp")
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if not consume_otp(db, current_user_id, data.otp_code.strip(), "update_settings"):
+        record_auth_failure(request, "settings-otp")
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+    if data.is_2fa_enabled is not None:
         new_val = 1 if data.is_2fa_enabled else 0
     else:
         new_val = 0 if user.is_2fa_enabled else 1
@@ -816,6 +879,7 @@ def toggle_2fa(response: Response, data: Optional[Toggle2FA] = None, current_use
     user.session_version += 1
     db.commit()
     db.refresh(user)
+    clear_auth_failures(request, "settings-otp")
     set_session_cookie(response, user)
     return {
         "message": f"Two-Factor Authentication {'enabled' if new_val else 'disabled'} successfully",
@@ -852,7 +916,8 @@ def request_otp(request: Request, background_tasks: BackgroundTasks, data: Optio
     }
 
 @app.put("/users/username")
-def update_username(response: Response, data: UpdateUsername, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_username(request: Request, response: Response, data: UpdateUsername, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "settings-otp", record_attempt=False)
     clean_username = data.username.strip()
     clean_otp = (data.otp_code or "").strip()
     if not clean_username:
@@ -860,14 +925,9 @@ def update_username(response: Response, data: UpdateUsername, current_user_id: i
     if not clean_otp:
         raise HTTPException(status_code=400, detail="Verification code is required")
         
-    now_iso = datetime.now(timezone.utc).isoformat()
-    otp = db.query(OTPCode).filter(
-        OTPCode.user_id == current_user_id,
-        OTPCode.code == clean_otp,
-        OTPCode.action == "update_settings",
-        OTPCode.expires_at > now_iso
-    ).first()
+    otp = consume_otp(db, current_user_id, clean_otp, "update_settings")
     if not otp:
+        record_auth_failure(request, "settings-otp")
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
         
     existing = db.query(User).filter(User.username == clean_username, User.id != current_user_id).first()
@@ -878,11 +938,11 @@ def update_username(response: Response, data: UpdateUsername, current_user_id: i
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    db.delete(otp)
     user.username = clean_username
     user.session_version += 1
     db.commit()
     db.refresh(user)
+    clear_auth_failures(request, "settings-otp")
     set_session_cookie(response, user)
     return {
         "message": "Username updated successfully",
@@ -890,7 +950,8 @@ def update_username(response: Response, data: UpdateUsername, current_user_id: i
     }
 
 @app.put("/users/password")
-def update_password(response: Response, data: UpdatePassword, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_password(request: Request, response: Response, data: UpdatePassword, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "settings-otp", record_attempt=False)
     clean_otp = (data.otp_code or "").strip()
     if not data.current_password or not data.new_password:
         raise HTTPException(status_code=400, detail="Current and new password are required")
@@ -901,14 +962,9 @@ def update_password(response: Response, data: UpdatePassword, current_user_id: i
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
         
-    now_iso = datetime.now(timezone.utc).isoformat()
-    otp = db.query(OTPCode).filter(
-        OTPCode.user_id == current_user_id,
-        OTPCode.code == clean_otp,
-        OTPCode.action == "update_settings",
-        OTPCode.expires_at > now_iso
-    ).first()
+    otp = consume_otp(db, current_user_id, clean_otp, "update_settings")
     if not otp:
+        record_auth_failure(request, "settings-otp")
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
         
     user = db.query(User).filter(User.id == current_user_id).first()
@@ -916,13 +972,14 @@ def update_password(response: Response, data: UpdatePassword, current_user_id: i
         raise HTTPException(status_code=404, detail="User not found")
         
     if not verify_password(data.current_password, user.password_hash):
+        record_auth_failure(request, "settings-otp")
         raise HTTPException(status_code=400, detail="Incorrect current password")
         
     user.password_hash = hash_password(data.new_password)
     user.session_version += 1
-    db.delete(otp)
     db.commit()
     db.refresh(user)
+    clear_auth_failures(request, "settings-otp")
     set_session_cookie(response, user)
     return {"message": "Password updated successfully"}
 
@@ -1118,11 +1175,6 @@ def get_retention_stats(current_user_id: int = Depends(get_current_user), db: Se
         "policy_hourly": "15 Months (Hourly Aggregates)",
         "next_schedule": "Daily at 02:00 UTC"
     }
-
-@app.post("/system/trigger-rollup")
-def trigger_rollup(current_user_id: int = Depends(get_current_user)):
-    process_historical_data()
-    return {"message": "Historical rollup and purge executed successfully"}
 
 @app.get("/notification-channels")
 def get_notification_channels(current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):

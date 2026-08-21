@@ -32,6 +32,8 @@ frontend/.env.local
 frontend/.env.*.local
 
 # General dependencies and caches
+.venv/
+.pytest_cache/
 node_modules/
 dist/
 dist-ssr/
