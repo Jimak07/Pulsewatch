@@ -12,9 +12,11 @@ const getApiBase = () => {
 };
 
 const getWsUrl = () => {
-  const apiUrl = new URL(getApiBase());
+  // The API exposes the WebSocket at the root `/ws` route. Resolve it from
+  // the API origin so an accidental path in VITE_API_BASE cannot produce a
+  // mismatched handshake URL.
+  const apiUrl = new URL('/ws', `${getApiBase()}/`);
   apiUrl.protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-  apiUrl.pathname = '/ws';
   apiUrl.search = '';
   return apiUrl.toString();
 };
@@ -35,10 +37,28 @@ export function AuthProvider({ children }) {
   };
 
   useEffect(() => {
-    fetch(`${getApiBase()}/users/me`, { credentials: 'include' })
-      .then(async res => res.ok ? setUser(await res.json()) : null)
-      .catch(() => setUser(null))
-      .finally(() => setSessionLoading(false));
+    const controller = new AbortController();
+    const checkSession = async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/users/me`, {
+          credentials: 'include',
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+        if (res.ok) {
+          setUser(await res.json());
+        } else if (res.status === 401) {
+          // A missing/expired cookie is the normal signed-out state.
+          setUser(null);
+        }
+      } catch (error) {
+        if (error?.name !== 'AbortError') setUser(null);
+      } finally {
+        if (!controller.signal.aborted) setSessionLoading(false);
+      }
+    };
+    checkSession();
+    return () => controller.abort();
   }, []);
 
   const login = async (username, password) => {
