@@ -6,6 +6,7 @@ COPY main.py .
 COPY install.sh .
 COPY metric_agent.py .
 COPY database.py .
+COPY auth_security.py .
 COPY cors_config.py .
 COPY target_security.py .
 COPY requirements.txt .

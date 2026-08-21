@@ -3,19 +3,20 @@ import { BrowserRouter, Routes, Route, Link, useLocation, Navigate } from 'react
 import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid } from 'recharts';
 
 const getApiBase = () => {
+  const configuredBase = import.meta.env.VITE_API_BASE?.trim();
+  if (configuredBase) return configuredBase.replace(/\/$/, '');
   if (typeof window !== 'undefined' && window.location.hostname) {
-    return `http://${window.location.hostname}:8000`;
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
   }
   return 'http://localhost:8000';
 };
 
-const getWsUrl = (token) => {
-  const encodedToken = encodeURIComponent(token || '');
-  if (typeof window !== 'undefined' && window.location.hostname) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.hostname}:8000/ws?token=${encodedToken}`;
-  }
-  return `ws://localhost:8000/ws?token=${encodedToken}`;
+const getWsUrl = () => {
+  const apiUrl = new URL(getApiBase());
+  apiUrl.protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  apiUrl.pathname = '/ws';
+  apiUrl.search = '';
+  return apiUrl.toString();
 };
 
 const AuthContext = createContext();
@@ -23,11 +24,22 @@ const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem('pulsewatch_token'));
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('pulsewatch_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [user, setUser] = useState(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+
+  const authFetch = async (url, options = {}) => {
+    const headers = { ...(options.headers || {}) };
+    const res = await fetch(url, { ...options, headers, credentials: 'include' });
+    if (res.status === 401) setUser(null);
+    return res;
+  };
+
+  useEffect(() => {
+    fetch(`${getApiBase()}/users/me`, { credentials: 'include' })
+      .then(async res => res.ok ? setUser(await res.json()) : null)
+      .catch(() => setUser(null))
+      .finally(() => setSessionLoading(false));
+  }, []);
 
   const login = async (username, password) => {
     const apiBase = getApiBase();
@@ -35,6 +47,7 @@ export function AuthProvider({ children }) {
     const res = await fetch(`${apiBase}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ username: cleanUser, password })
     });
     if (!res.ok) {
@@ -45,10 +58,7 @@ export function AuthProvider({ children }) {
     if (data.require_2fa) {
       return data;
     }
-    setToken(data.access_token);
     setUser({ user_id: data.user_id, username: data.username });
-    localStorage.setItem('pulsewatch_token', data.access_token);
-    localStorage.setItem('pulsewatch_user', JSON.stringify({ user_id: data.user_id, username: data.username }));
     return data;
   };
 
@@ -59,6 +69,7 @@ export function AuthProvider({ children }) {
     const res = await fetch(`${apiBase}/login/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ username: cleanUser, otp_code: cleanOtp })
     });
     if (!res.ok) {
@@ -66,10 +77,7 @@ export function AuthProvider({ children }) {
       throw new Error(errData.detail || '2FA verification failed');
     }
     const data = await res.json();
-    setToken(data.access_token);
     setUser({ user_id: data.user_id, username: data.username });
-    localStorage.setItem('pulsewatch_token', data.access_token);
-    localStorage.setItem('pulsewatch_user', JSON.stringify({ user_id: data.user_id, username: data.username }));
     return data;
   };
 
@@ -79,6 +87,7 @@ export function AuthProvider({ children }) {
     const res = await fetch(`${apiBase}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ username: cleanUser, password })
     });
     if (!res.ok) {
@@ -86,46 +95,23 @@ export function AuthProvider({ children }) {
       throw new Error(errData.detail || 'Registration failed');
     }
     const data = await res.json();
-    setToken(data.access_token);
     setUser({ user_id: data.user_id, username: data.username });
-    localStorage.setItem('pulsewatch_token', data.access_token);
-    localStorage.setItem('pulsewatch_user', JSON.stringify({ user_id: data.user_id, username: data.username }));
     return data;
   };
 
-  const updateUser = (newUsername, newToken) => {
+  const updateUser = (newUsername) => {
     setUser(prev => {
-      const updated = { ...(prev || {}), username: newUsername };
-      localStorage.setItem('pulsewatch_user', JSON.stringify(updated));
-      return updated;
+      return { ...(prev || {}), username: newUsername };
     });
-    if (newToken) {
-      setToken(newToken);
-      localStorage.setItem('pulsewatch_token', newToken);
-    }
   };
 
-  const logout = () => {
-    setToken(null);
+  const logout = async () => {
+    await fetch(`${getApiBase()}/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
     setUser(null);
-    localStorage.removeItem('pulsewatch_token');
-    localStorage.removeItem('pulsewatch_user');
-  };
-
-  const authFetch = async (url, options = {}) => {
-    const headers = {
-      ...(options.headers || {}),
-      'Authorization': `Bearer ${token}`
-    };
-    const res = await fetch(url, { ...options, headers });
-    if (res.status === 401) {
-      logout();
-    }
-    return res;
   };
 
   return (
-    <AuthContext.Provider value={{ token, user, login, verify2fa, register, logout, authFetch, updateUser }}>
+    <AuthContext.Provider value={{ user, sessionLoading, login, verify2fa, register, logout, authFetch, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -307,7 +293,6 @@ function AuthScreen() {
         )}
 
         <div className="pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
-          Default admin: <span className="text-slate-300 font-mono">admin</span> / <span className="text-slate-300 font-mono">admin123</span>
         </div>
       </div>
     </div>
@@ -508,7 +493,7 @@ function Settings() {
 
       setUsernameSuccess(data.message || 'Username updated successfully');
       if (updateUser) {
-        updateUser({ username: data.username });
+        updateUser(data.username);
       }
       setUsernameOtp('');
       setIsUsernameOtpSent(false);
@@ -529,8 +514,8 @@ function Settings() {
       return;
     }
 
-    if (newPassword.length < 6) {
-      setPasswordError('New password must be at least 6 characters');
+    if (newPassword.length < 8 || newPassword.length > 64 || !/\d/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+      setPasswordError('New password must be 8-64 characters and include a number and special character');
       return;
     }
 
@@ -1277,7 +1262,7 @@ function Dashboard() {
   const [wsConnected, setWsConnected] = useState(false);
 
   const apiBase = getApiBase();
-  const { token, authFetch } = useAuth();
+  const { user, authFetch } = useAuth();
   const currentHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
   const installCmd = `curl -fsSL http://${currentHost}:8000/install.sh | bash -s http://${currentHost}:8000/agent/metric_agent.py`;
 
@@ -1300,9 +1285,9 @@ function Dashboard() {
     let isMounted = true;
 
     const connectWs = () => {
-      if (!isMounted || !token) return;
+      if (!isMounted || !user) return;
       try {
-        const wsUrl = getWsUrl(token);
+        const wsUrl = getWsUrl();
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
@@ -1350,7 +1335,7 @@ function Dashboard() {
       clearInterval(fallbackInterval);
       if (ws) ws.close();
     };
-  }, [apiBase, token]);
+  }, [apiBase, user]);
 
   const handleAddServer = (e) => {
     e.preventDefault();
@@ -2028,9 +2013,13 @@ function Layout({ children }) {
 }
 
 function ProtectedApp() {
-  const { token } = useAuth();
+  const { user, sessionLoading } = useAuth();
 
-  if (!token) {
+  if (sessionLoading) {
+    return <div className="min-h-screen bg-slate-950" />;
+  }
+
+  if (!user) {
     return <AuthScreen />;
   }
 

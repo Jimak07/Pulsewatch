@@ -5,7 +5,7 @@ from pathlib import Path
 load_dotenv()
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -33,6 +33,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     email = Column(String, nullable=True)
     is_2fa_enabled = Column(Integer, default=0)
+    session_version = Column(Integer, nullable=False, default=0)
 
 class OTPCode(Base):
     __tablename__ = "otp_codes"
@@ -96,13 +97,17 @@ class MetricHourly(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    with engine.connect() as conn:
-        try:
-            conn.execute(text('ALTER TABLE "Server" ADD COLUMN IF NOT EXISTS ssl_expiry_date VARCHAR'))
-            conn.execute(text('ALTER TABLE "Server" ADD COLUMN IF NOT EXISTS ssl_days_remaining INTEGER'))
-            conn.commit()
-        except Exception:
-            pass
+    migrations = (
+        ("Server", "ssl_expiry_date", 'ALTER TABLE "Server" ADD COLUMN ssl_expiry_date VARCHAR'),
+        ("Server", "ssl_days_remaining", 'ALTER TABLE "Server" ADD COLUMN ssl_days_remaining INTEGER'),
+        ("users", "session_version", 'ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0'),
+    )
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        for table_name, column_name, statement in migrations:
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
+            if column_name not in columns:
+                conn.execute(text(statement))
 
 def get_db():
     db = SessionLocal()

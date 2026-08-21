@@ -1,18 +1,17 @@
-from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import bcrypt
 import jwt
-import random
 import os
 import socket
 import ssl
 import smtplib
+import secrets
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -41,9 +40,10 @@ AGENT_AUTH_TOKEN = require_environment_variable("AGENT_AUTH_TOKEN")
 JWT_SECRET_KEY = require_environment_variable("JWT_SECRET_KEY")
 ALLOWED_ORIGINS_RAW = require_environment_variable("ALLOWED_ORIGINS")
 
-from database import engine, Base, init_db, get_db, SessionLocal, User, OTPCode, Server, NotificationChannel, HealthCheck, MetricRaw, MetricHourly
+from database import engine, init_db, get_db, SessionLocal, User, OTPCode, Server, NotificationChannel, HealthCheck, MetricRaw, MetricHourly
 from cors_config import CorsConfigurationError, normalize_origin, parse_allowed_origins
 from target_security import UnsafeTargetError, validate_and_resolve_target
+from auth_security import InMemoryRateLimiter, validate_password_policy
 
 try:
     ALLOWED_ORIGINS = parse_allowed_origins(ALLOWED_ORIGINS_RAW)
@@ -114,14 +114,53 @@ def extract_ssl_expiry(connect_host: str, server_hostname: str, port: int = 443,
 
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24
+ACCESS_TOKEN_EXPIRE_HOURS = 1
+SESSION_COOKIE_NAME = "pulsewatch_session"
+AUTH_RATE_LIMIT = 5
+AUTH_RATE_WINDOW_SECONDS = 300
+auth_rate_limiter = InMemoryRateLimiter(AUTH_RATE_LIMIT, AUTH_RATE_WINDOW_SECONDS)
 
-def decode_access_token(token: str) -> int:
+def decode_access_token(token: str) -> tuple[int, int]:
     payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
     user_id = payload.get("user_id")
-    if user_id is None:
-        raise jwt.InvalidTokenError("Token is missing user_id")
-    return int(user_id)
+    session_version = payload.get("session_version")
+    if user_id is None or session_version is None:
+        raise jwt.InvalidTokenError("Token is missing required claims")
+    return int(user_id), int(session_version)
+
+def set_session_cookie(response: Response, user: User) -> None:
+    token = create_access_token(user.id, user.username, user.session_version)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
+        path="/",
+    )
+
+def auth_rate_key(request: Request, action: str) -> str:
+    client_ip = request.client.host if request.client else "unknown"
+    return f"{action}:{client_ip}"
+
+def enforce_rate_limit(request: Request, action: str, record_attempt: bool = True) -> None:
+    key = auth_rate_key(request, action)
+    retry_after = auth_rate_limiter.retry_after(key)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    if record_attempt:
+        auth_rate_limiter.record(key)
+
+def record_auth_failure(request: Request, action: str) -> None:
+    auth_rate_limiter.record(auth_rate_key(request, action))
+
+def clear_auth_failures(request: Request, action: str) -> None:
+    auth_rate_limiter.reset(auth_rate_key(request, action))
 
 app = FastAPI()
 
@@ -197,7 +236,7 @@ def release_scheduler_lock() -> None:
 
 @app.on_event("startup")
 def startup_event():
-    Base.metadata.create_all(bind=engine)
+    init_db()
     if acquire_scheduler_lock() and not scheduler.running:
         scheduler.start()
         print(f"[SCHEDULER] APScheduler background monitoring worker started successfully at {datetime.now(timezone.utc).isoformat()}.", flush=True)
@@ -222,16 +261,23 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4403, reason="Origin not allowed")
         return
 
-    token = websocket.query_params.get("token")
+    token = websocket.cookies.get(SESSION_COOKIE_NAME)
     if not token:
-        await websocket.close(code=4401, reason="Authentication token required")
+        await websocket.close(code=4401, reason="Authentication cookie required")
         return
 
+    db = SessionLocal()
     try:
-        user_id = decode_access_token(token)
+        user_id, token_session_version = decode_access_token(token)
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.session_version != token_session_version:
+            await websocket.close(code=4401, reason="Session is no longer valid")
+            return
     except (jwt.InvalidTokenError, ValueError, TypeError):
         await websocket.close(code=4401, reason="Invalid or expired authentication token")
         return
+    finally:
+        db.close()
 
     await ws_manager.connect(user_id, websocket)
     try:
@@ -269,8 +315,6 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         ws_manager.disconnect(user_id, websocket)
 
-
-security = HTTPBearer()
 
 class UserAuth(BaseModel):
     username: str
@@ -317,7 +361,7 @@ class NotificationChannelUpdate(BaseModel):
     is_active: Optional[int] = None
 
 def generate_otp_code() -> str:
-    return f"{random.randint(100000, 999999)}"
+    return f"{secrets.randbelow(900000) + 100000}"
 
 def send_actual_otp_email(to_email: str, code: str):
     smtp_email = os.getenv("SMTP_EMAIL")
@@ -590,32 +634,33 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: int, username: str) -> str:
+def create_access_token(user_id: int, username: str, session_version: int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
         "user_id": user_id,
         "sub": username,
+        "session_version": session_version,
         "exp": expire
     }
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> int:
-    token = credentials.credentials
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> int:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     try:
-        return decode_access_token(token)
+        user_id, token_session_version = decode_access_token(token)
     except (jwt.InvalidTokenError, ValueError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-def init_db():
-    Base.metadata.create_all(bind=engine)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or user.session_version != token_session_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer valid")
+    return user_id
 
 
 @app.post("/register")
-def register(auth: UserAuth, db: Session = Depends(get_db)):
+def register(request: Request, response: Response, auth: UserAuth, db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "register")
     clean_username = auth.username.strip()
     if not clean_username or not auth.password:
         raise HTTPException(status_code=400, detail="Username and password cannot be empty")
@@ -624,6 +669,10 @@ def register(auth: UserAuth, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already exists")
     
+    try:
+        validate_password_policy(auth.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     hashed = hash_password(auth.password)
     new_user = User(
         username=clean_username,
@@ -639,25 +688,27 @@ def register(auth: UserAuth, db: Session = Depends(get_db)):
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=400, detail="Username already exists")
-    except Exception as e:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Unable to create account")
         
-    token = create_access_token(new_user.id, new_user.username)
+    set_session_cookie(response, new_user)
     return {
-        "access_token": token,
-        "token_type": "bearer",
         "user_id": new_user.id,
         "username": new_user.username
     }
 
 @app.post("/login")
-def login(auth: UserAuth, background_tasks: BackgroundTasks = None, db: Session = Depends(get_db)):
+def login(request: Request, response: Response, background_tasks: BackgroundTasks, auth: UserAuth, db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "login", record_attempt=False)
     clean_username = auth.username.strip()
     user = db.query(User).filter(User.username == clean_username).first()
     
     if not user or not verify_password(auth.password, user.password_hash):
+        record_auth_failure(request, "login")
         raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    clear_auth_failures(request, "login")
         
     if user.is_2fa_enabled:
         target_email = user.email.strip() if user.email and user.email.strip() else f"{clean_username}@pulsewatch.local"
@@ -681,17 +732,17 @@ def login(auth: UserAuth, background_tasks: BackgroundTasks = None, db: Session 
             "message": f"Two-factor authentication code sent to {target_email}"
         }
         
-    token = create_access_token(user.id, clean_username)
+    set_session_cookie(response, user)
     return {
-        "access_token": token,
-        "token_type": "bearer",
         "user_id": user.id,
         "username": clean_username,
         "require_2fa": False
     }
 
+@app.post("/verify-otp")
 @app.post("/login/verify")
-def login_verify(data: LoginVerify, db: Session = Depends(get_db)):
+def login_verify(request: Request, response: Response, data: LoginVerify, db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "verify-otp", record_attempt=False)
     clean_username = data.username.strip()
     clean_otp = data.otp_code.strip()
     
@@ -700,7 +751,8 @@ def login_verify(data: LoginVerify, db: Session = Depends(get_db)):
         
     user = db.query(User).filter(User.username == clean_username).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        record_auth_failure(request, "verify-otp")
+        raise HTTPException(status_code=400, detail="Invalid or expired 2FA code")
         
     now_iso = datetime.now(timezone.utc).isoformat()
     otp = db.query(OTPCode).filter(
@@ -711,18 +763,23 @@ def login_verify(data: LoginVerify, db: Session = Depends(get_db)):
     ).first()
     
     if not otp:
+        record_auth_failure(request, "verify-otp")
         raise HTTPException(status_code=400, detail="Invalid or expired 2FA code")
         
     db.delete(otp)
     db.commit()
+    clear_auth_failures(request, "verify-otp")
     
-    token = create_access_token(user.id, clean_username)
+    set_session_cookie(response, user)
     return {
-        "access_token": token,
-        "token_type": "bearer",
         "user_id": user.id,
         "username": clean_username
     }
+
+@app.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+    return {"message": "Signed out successfully"}
 
 @app.get("/users/me")
 def get_user_profile(current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -747,7 +804,7 @@ def update_email(data: UpdateEmail, current_user_id: int = Depends(get_current_u
     return {"message": "Email updated successfully", "email": clean_email}
 
 @app.put("/users/2fa-toggle")
-def toggle_2fa(data: Optional[Toggle2FA] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def toggle_2fa(response: Response, data: Optional[Toggle2FA] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == current_user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -756,14 +813,19 @@ def toggle_2fa(data: Optional[Toggle2FA] = None, current_user_id: int = Depends(
     else:
         new_val = 0 if user.is_2fa_enabled else 1
     user.is_2fa_enabled = new_val
+    user.session_version += 1
     db.commit()
+    db.refresh(user)
+    set_session_cookie(response, user)
     return {
         "message": f"Two-Factor Authentication {'enabled' if new_val else 'disabled'} successfully",
         "is_2fa_enabled": bool(new_val)
     }
 
+@app.post("/resend-otp")
 @app.post("/users/request-otp")
-def request_otp(data: Optional[RequestOTP] = None, background_tasks: BackgroundTasks = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def request_otp(request: Request, background_tasks: BackgroundTasks, data: Optional[RequestOTP] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+    enforce_rate_limit(request, "resend-otp")
     action = (data.action if data and data.action else "update_settings").strip()
     user = db.query(User).filter(User.id == current_user_id).first()
     if not user:
@@ -790,7 +852,7 @@ def request_otp(data: Optional[RequestOTP] = None, background_tasks: BackgroundT
     }
 
 @app.put("/users/username")
-def update_username(data: UpdateUsername, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_username(response: Response, data: UpdateUsername, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     clean_username = data.username.strip()
     clean_otp = (data.otp_code or "").strip()
     if not clean_username:
@@ -818,22 +880,26 @@ def update_username(data: UpdateUsername, current_user_id: int = Depends(get_cur
         
     db.delete(otp)
     user.username = clean_username
+    user.session_version += 1
     db.commit()
-    
-    new_token = create_access_token(current_user_id, clean_username)
+    db.refresh(user)
+    set_session_cookie(response, user)
     return {
         "message": "Username updated successfully",
-        "username": clean_username,
-        "access_token": new_token
+        "username": clean_username
     }
 
 @app.put("/users/password")
-def update_password(data: UpdatePassword, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_password(response: Response, data: UpdatePassword, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     clean_otp = (data.otp_code or "").strip()
     if not data.current_password or not data.new_password:
         raise HTTPException(status_code=400, detail="Current and new password are required")
     if not clean_otp:
         raise HTTPException(status_code=400, detail="Verification code is required")
+    try:
+        validate_password_policy(data.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
         
     now_iso = datetime.now(timezone.utc).isoformat()
     otp = db.query(OTPCode).filter(
@@ -853,9 +919,11 @@ def update_password(data: UpdatePassword, current_user_id: int = Depends(get_cur
         raise HTTPException(status_code=400, detail="Incorrect current password")
         
     user.password_hash = hash_password(data.new_password)
+    user.session_version += 1
     db.delete(otp)
     db.commit()
-    
+    db.refresh(user)
+    set_session_cookie(response, user)
     return {"message": "Password updated successfully"}
 
 @app.get("/install.sh")
