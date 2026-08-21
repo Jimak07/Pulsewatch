@@ -12,6 +12,14 @@ const getApiBase = () => {
 };
 
 const getWsUrl = () => {
+  const configuredWs = import.meta.env.VITE_WS_URL?.trim();
+  if (configuredWs) {
+    const wsUrl = new URL(configuredWs);
+    if (wsUrl.protocol !== 'ws:' && wsUrl.protocol !== 'wss:') {
+      throw new Error('VITE_WS_URL must use ws:// or wss://');
+    }
+    return wsUrl.toString();
+  }
   // The API exposes the WebSocket at the root `/ws` route. Resolve it from
   // the API origin so an accidental path in VITE_API_BASE cannot produce a
   // mismatched handshake URL.
