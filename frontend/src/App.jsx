@@ -1341,11 +1341,6 @@ function ServerCard({ server, onDelete }) {
       <div className="h-32 w-full mt-4 border-t border-slate-700 pt-4">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={history} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-            <defs>
-              <linearGradient id={`colorStatusDashboard-${server.server_id}`} x1="0%" y1="0%" x2="100%" y2="0%">
-                {generateGradientStops(history, '#22c55e')}
-              </linearGradient>
-            </defs>
             <XAxis 
               dataKey="timestamp" 
               type="number"
@@ -1371,16 +1366,22 @@ function ServerCard({ server, onDelete }) {
               formatter={(value, name, props) => [props.payload.statusText, 'Status']}
             />
             
-            <Line 
-              type="linear" 
-              dataKey="status" 
-              stroke={`url(#colorStatusDashboard-${server.server_id})`} 
+            <Line
+              type="stepAfter"
+              dataKey="onlineStatus"
+              stroke="#22c55e"
               strokeWidth={2} 
-              dot={false} 
-              activeDot={(props) => {
-                const { cx, cy, payload } = props;
-                return <circle key={`dot-${cx}-${cy}`} cx={cx} cy={cy} r={5} fill={payload.status === 0 ? "#ef4444" : "#22c55e"} stroke="#1e293b" strokeWidth={2} />;
-              }}
+              dot={false}
+              activeDot={{ r: 4, fill: '#22c55e', stroke: '#1e293b', strokeWidth: 2 }}
+              isAnimationActive={false}
+            />
+            <Line
+              type="stepAfter"
+              dataKey="offlineStatus"
+              stroke="#ef4444"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: '#ef4444', stroke: '#1e293b', strokeWidth: 2 }}
               isAnimationActive={false}
             />
           </LineChart>
