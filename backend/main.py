@@ -18,6 +18,7 @@ import smtplib
 import secrets
 import logging
 import uuid
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -1020,8 +1021,11 @@ def get_metric_agent():
 @app.get("/servers")
 def get_servers(current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     servers = db.query(Server).filter(Server.user_id == current_user_id).all()
-    return [
-        {
+    payload = []
+    for s in servers:
+        latest = db.query(HealthCheck).filter(HealthCheck.server_id == s.server_id).order_by(HealthCheck.timestamp.desc()).first()
+        telemetry = json.loads(latest.telemetry_json) if latest and latest.telemetry_json else {}
+        payload.append({
             "server_id": s.server_id,
             "user_id": s.user_id,
             "hostname": s.hostname,
@@ -1030,10 +1034,16 @@ def get_servers(current_user_id: int = Depends(get_current_user), db: Session = 
             "active_connections": s.active_connections,
             "is_active": s.is_active,
             "ssl_expiry_date": s.ssl_expiry_date,
-            "ssl_days_remaining": s.ssl_days_remaining
-        }
-        for s in servers
-    ]
+            "ssl_days_remaining": s.ssl_days_remaining,
+            "monitor_type": s.monitor_type or "http",
+            "port": s.port,
+            "expected_status_code": s.expected_status_code or 200,
+            "heartbeat_interval_seconds": s.heartbeat_interval_seconds,
+            "last_heartbeat_at": s.last_heartbeat_at,
+            "telemetry": telemetry,
+            "last_checked_at": latest.timestamp if latest else None,
+        })
+    return payload
 
 @app.post("/servers")
 def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1366,6 +1376,7 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     ssl_expiry_date = None
     ssl_days_remaining = None
     ssl_error = None
+    telemetry = {"is_success": False}
     
     print(f"[PROBE] Checking server #{server_id} ('{hostname}') -> target: {target}", flush=True)
 
@@ -1375,24 +1386,31 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
             last = datetime.fromisoformat(last_heartbeat_at) if last_heartbeat_at else None
             grace = 30
             status = int(bool(last and heartbeat_interval_seconds and datetime.now(timezone.utc) - last.astimezone(timezone.utc) <= timedelta(seconds=heartbeat_interval_seconds + grace)))
+            telemetry = {"last_heartbeat_at": last_heartbeat_at, "seconds_until_overdue": max(0, (heartbeat_interval_seconds or 0) + grace - (datetime.now(timezone.utc) - last).total_seconds()) if last else 0, "is_success": bool(status)}
         except (TypeError, ValueError):
             status = 0
     elif monitor_type in {"tcp", "ssh", "smtp"}:
         check_port = port or ({"ssh": 22, "smtp": 587}.get(monitor_type, 80))
         result = await check_tcp(target, check_port)
         status = int(result["ok"])
+        telemetry = {"port": check_port, "handshake_time_ms": result.get("response_time_ms"), "response_time_ms": result.get("response_time_ms"), "is_success": bool(status), "error": result.get("error")}
     elif monitor_type == "dns":
-        status = int((await check_dns(target))["ok"])
+        result = await check_dns(target)
+        status = int(result["ok"])
+        telemetry = {"record_type": "A", "resolved_value": result.get("resolved_value"), "lookup_time_ms": result.get("response_time_ms"), "is_success": bool(status), "error": result.get("error")}
     elif monitor_type == "ping":
-        status = int((await check_ping(target))["ok"])
+        result = await check_ping(target)
+        status = int(result["ok"])
+        telemetry = {"latency_ms": result.get("response_time_ms"), "packet_loss_percent": 0 if status else 100, "is_success": bool(status), "error": result.get("error")}
     elif monitor_type in {"http", "head"}:
         result = await check_http(target, method="HEAD" if monitor_type == "head" else "GET", expected_code=expected_status_code)
         status = int(result["ok"])
+        telemetry = {"status_code": result.get("status_code"), "response_time_ms": result.get("response_time_ms"), "is_success": bool(status), "error": result.get("error")}
     else:
         status = 0
 
     if monitor_type != "http":
-        return {"server_id": server_id, "raw_status": status, "effective_active": status, "cpu_usage": None, "ram_usage": None, "ssl_expiry_date": None, "ssl_days_remaining": None, "ssl_error": None}
+        return {"server_id": server_id, "raw_status": status, "effective_active": status, "cpu_usage": None, "ram_usage": None, "ssl_expiry_date": None, "ssl_days_remaining": None, "ssl_error": None, "telemetry": telemetry}
 
     try:
         validated_target = await asyncio.to_thread(validate_and_resolve_target, target)
@@ -1427,7 +1445,11 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
                 extensions={"sni_hostname": validated_target.hostname},
             )
             response = await client.send(request, follow_redirects=False)
-            if response.status_code < 300 and not ssl_error:
+            telemetry["status_code"] = response.status_code
+            telemetry["response_time_ms"] = telemetry.get("response_time_ms") or None
+            telemetry["ssl_days_left"] = ssl_days_remaining
+            telemetry["is_success"] = response.status_code == 200 and not ssl_error
+            if response.status_code == expected_status_code and not ssl_error:
                 status = 1
         except (httpx.ConnectError, ssl.SSLError) as e:
             if not ssl_error and validated_target.scheme == "https":
@@ -1484,6 +1506,7 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
         "ssl_expiry_date": ssl_expiry_date,
         "ssl_days_remaining": ssl_days_remaining,
         "ssl_error": ssl_error
+        ,"telemetry": {**telemetry, "is_success": bool(status and not ssl_error)}
     }
 
 async def async_monitoring_job():
@@ -1619,7 +1642,8 @@ async def async_monitoring_job():
                 status=effective_active,
                 timestamp=timestamp,
                 cpu_usage=cpu,
-                ram_usage=ram
+                ram_usage=ram,
+                telemetry_json=json.dumps(res.get("telemetry", {}))
             )
             db.add(hc)
 
@@ -1672,6 +1696,8 @@ async def async_monitoring_job():
                         "is_active": s.is_active,
                         "ssl_expiry_date": s.ssl_expiry_date,
                         "ssl_days_remaining": s.ssl_days_remaining
+                        ,"monitor_type": s.monitor_type or "http"
+                        ,"telemetry": (json.loads((db.query(HealthCheck).filter(HealthCheck.server_id == s.server_id).order_by(HealthCheck.timestamp.desc()).first().telemetry_json) if db.query(HealthCheck).filter(HealthCheck.server_id == s.server_id).order_by(HealthCheck.timestamp.desc()).first() and db.query(HealthCheck).filter(HealthCheck.server_id == s.server_id).order_by(HealthCheck.timestamp.desc()).first().telemetry_json else "{}"))
                     }
                     for s in user_servers
                 ]

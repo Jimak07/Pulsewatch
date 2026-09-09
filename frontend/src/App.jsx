@@ -1312,6 +1312,24 @@ function ServerCard({ server, onDelete }) {
   const startTime = endTime - 3600000;
   const apiBase = getApiBase();
   const { authFetch } = useAuth();
+  const telemetry = server.telemetry || {};
+  const monitorType = (server.monitor_type || 'http').toLowerCase();
+  const success = telemetry.is_success ?? Boolean(server.is_active);
+  const checkedAt = server.last_checked_at ? Math.max(0, Math.round((Date.now() - new Date(server.last_checked_at).getTime()) / 1000)) : null;
+  const badge = monitorType === 'push'
+    ? (success ? `Heartbeat Received (${checkedAt ?? 0}s ago)` : 'Heartbeat Overdue / Missed')
+    : monitorType === 'dns'
+      ? (success ? `Resolved (${telemetry.resolved_value || 'A'})` : 'NXDOMAIN / Resolution Failed')
+      : monitorType === 'ping'
+        ? (success ? `Ping Reached (${telemetry.latency_ms ?? '-'} ms)` : 'Host Unreachable / 100% Loss')
+        : monitorType === 'tcp'
+          ? (success ? `Port ${server.port || '-'} Open` : `Port ${server.port || '-'} Closed / Refused`)
+          : monitorType === 'smtp'
+            ? (success ? `Mail Gateway Active (:${server.port || 587})` : 'SMTP Port Unreachable')
+            : monitorType === 'ssh'
+              ? (success ? 'SSH Port Open (:22)' : 'SSH Connection Refused')
+              : (success ? `${telemetry.status_code || server.expected_status_code || 200} OK` : `${telemetry.status_code || 'Connection'} Error`);
+  const latency = monitorType === 'push' ? `Every ${server.heartbeat_interval_seconds || '-'}s` : `${telemetry.response_time_ms ?? telemetry.handshake_time_ms ?? telemetry.latency_ms ?? '-'} ms`;
 
   useEffect(() => {
     authFetch(`${apiBase}/servers/${server.server_id}/history`)
@@ -1347,6 +1365,11 @@ function ServerCard({ server, onDelete }) {
       </div>
       
       <div className="space-y-2 text-slate-300 mb-4 flex-grow text-xs">
+        <div className="flex items-center justify-between rounded-lg border border-slate-700 px-3 py-2 font-semibold">
+          <span className={success ? 'text-emerald-400' : 'text-red-400'}>{success ? '🟢' : '🔴'} {badge}</span>
+        </div>
+        <div className="flex items-center justify-between text-[11px] text-slate-400"><span>⚡ {latency}</span><span>🕒 {checkedAt === null ? 'Not checked' : `Checked ${checkedAt}s ago`}</span></div>
+        <div className="flex gap-1" aria-label="Recent health status">{history.slice(-12).map((point, index) => <span key={index} className={`h-2 flex-1 rounded-sm ${point.status ? 'bg-white' : 'bg-neutral-600'}`} />)}</div>
         <p><span className="font-bold text-slate-500">Target:</span> {server.target_address || 'N/A'}</p>
         <p><span className="font-bold text-slate-500">Role:</span> {server.server_role}</p>
         <p><span className="font-bold text-slate-500">Connections:</span> {server.active_connections}</p>

@@ -23,6 +23,8 @@ async def check_http(url: str, method: str = "GET", expected_code: int = 200) ->
             "ok": response.status_code == expected_code,
             "status_code": response.status_code,
             "response_time_ms": elapsed_ms,
+            "ssl_days_left": None,
+            "is_success": response.status_code == expected_code,
             "error": None if response.status_code == expected_code else f"Expected HTTP {expected_code}, got {response.status_code}",
         }
     except Exception as exc:
@@ -49,7 +51,8 @@ async def check_dns(domain: str, record_type: str = "A") -> dict[str, Any]:
     started = time.perf_counter()
     try:
         records = await asyncio.to_thread(socket.getaddrinfo, domain, None, socket.AF_INET)
-        return {"ok": bool(records), "response_time_ms": round((time.perf_counter() - started) * 1000, 2), "error": None}
+        resolved = records[0][4][0] if records else None
+        return {"ok": bool(records), "resolved_value": resolved, "response_time_ms": round((time.perf_counter() - started) * 1000, 2), "error": None}
     except Exception as exc:
         return {"ok": False, "response_time_ms": None, "error": str(exc)}
 

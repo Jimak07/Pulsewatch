@@ -82,6 +82,7 @@ class HealthCheck(Base):
     timestamp = Column(String, nullable=True)
     cpu_usage = Column(Float, nullable=True)
     ram_usage = Column(Float, nullable=True)
+    telemetry_json = Column(String, nullable=True)
 
 class MetricRaw(Base):
     __tablename__ = "metrics_raw"
@@ -115,6 +116,7 @@ def init_db():
         ("Server", "dns_record_type", 'ALTER TABLE "Server" ADD COLUMN dns_record_type VARCHAR DEFAULT \'A\''),
         ("Server", "last_heartbeat_at", 'ALTER TABLE "Server" ADD COLUMN last_heartbeat_at VARCHAR'),
         ("users", "session_version", 'ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0'),
+        ("HealthChecks", "telemetry_json", 'ALTER TABLE "HealthChecks" ADD COLUMN telemetry_json VARCHAR'),
     )
     with engine.begin() as conn:
         inspector = inspect(conn)
