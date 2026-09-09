@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
@@ -10,6 +10,7 @@ import jwt
 import os
 import socket
 import ssl
+import secrets
 import smtplib
 import secrets
 import logging
@@ -20,6 +21,7 @@ from typing import Optional
 
 import asyncio
 import httpx
+from checkers import check_http, check_tcp, check_dns, check_ping
 from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
@@ -384,6 +386,19 @@ class ServerCreate(BaseModel):
     hostname: str
     server_role: str
     target_address: str
+    type: str = "http"
+    port: Optional[int] = None
+    push_token: Optional[str] = None
+    expected_status_code: int = 200
+    heartbeat_interval_seconds: Optional[int] = None
+
+    @validator("type")
+    def validate_monitor_type(cls, value):
+        allowed = {"http", "head", "tcp", "dns", "smtp", "ssh", "ping", "push"}
+        normalized = value.lower().strip()
+        if normalized not in allowed:
+            raise ValueError(f"Monitor type must be one of: {', '.join(sorted(allowed))}")
+        return normalized
 
 class ServerUpdate(BaseModel):
     is_active: int
@@ -1014,16 +1029,28 @@ def get_servers(current_user_id: int = Depends(get_current_user), db: Session = 
 
 @app.post("/servers")
 def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
-    try:
-        validated_target = validate_and_resolve_target(server.target_address)
-    except UnsafeTargetError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    monitor_type = server.type.lower()
+    if monitor_type in {"http", "head"}:
+        try:
+            validated_target = validate_and_resolve_target(server.target_address)
+            target_address = validated_target.original_url
+        except UnsafeTargetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        target_address = server.target_address.strip()
+        if not target_address or any(char in target_address for char in "\r\n/\\"):
+            raise HTTPException(status_code=400, detail="Invalid monitor target")
 
     new_server = Server(
         user_id=current_user_id,
         hostname=server.hostname.strip(),
         server_role=server.server_role.strip(),
-        target_address=validated_target.original_url,
+        target_address=target_address,
+        monitor_type=monitor_type,
+        port=server.port,
+        push_token=server.push_token or (secrets.token_urlsafe(32) if monitor_type == "push" else None),
+        expected_status_code=server.expected_status_code,
+        heartbeat_interval_seconds=server.heartbeat_interval_seconds,
         active_connections=0,
         is_active=1
     )
@@ -1036,6 +1063,11 @@ def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_
         "hostname": new_server.hostname,
         "server_role": new_server.server_role,
         "target_address": new_server.target_address,
+        "type": new_server.monitor_type,
+        "port": new_server.port,
+        "push_token": new_server.push_token,
+        "expected_status_code": new_server.expected_status_code,
+        "heartbeat_interval_seconds": new_server.heartbeat_interval_seconds,
         "active_connections": new_server.active_connections,
         "is_active": new_server.is_active,
         "ssl_expiry_date": new_server.ssl_expiry_date,
@@ -1058,6 +1090,19 @@ def update_server(server_id: int, server: ServerUpdate, current_user_id: int = D
     db.add(mr)
     db.commit()
     return {"message": "Server updated"}
+
+@app.api_route("/api/monitors/push/{push_token}", methods=["GET", "POST"])
+def push_monitor_heartbeat(push_token: str, db: Session = Depends(get_db)):
+    monitor = db.query(Server).filter(Server.push_token == push_token, Server.monitor_type == "push").first()
+    if not monitor:
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    timestamp = datetime.now(timezone.utc).isoformat()
+    monitor.last_heartbeat_at = timestamp
+    monitor.is_active = 1
+    db.add(HealthCheck(server_id=monitor.server_id, status=1, timestamp=timestamp))
+    db.add(MetricRaw(server_id=monitor.server_id, status=1, timestamp=timestamp))
+    db.commit()
+    return {"status": "Online", "monitor_id": monitor.server_id, "timestamp": timestamp}
 
 @app.delete("/servers/{server_id}")
 def delete_server(server_id: int, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1304,7 +1349,7 @@ async def test_notification_channel(channel_id: int, current_user_id: int = Depe
 consecutive_failures: dict[int, int] = {}
 CONSECUTIVE_FAILURES_THRESHOLD = 3
 
-async def check_single_server(client: httpx.AsyncClient, server_id: int, target_address: str, hostname: str, current_active: int):
+async def check_single_server(client: httpx.AsyncClient, server_id: int, target_address: str, hostname: str, current_active: int, monitor_type: str = "http", port: Optional[int] = None, expected_status_code: int = 200, heartbeat_interval_seconds: Optional[int] = None, last_heartbeat_at: Optional[str] = None):
     target = (target_address or "").strip()
     status = 0
     cpu_usage = None
@@ -1314,6 +1359,31 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     ssl_error = None
     
     print(f"[PROBE] Checking server #{server_id} ('{hostname}') -> target: {target}", flush=True)
+
+    monitor_type = (monitor_type or "http").lower()
+    if monitor_type == "push":
+        try:
+            last = datetime.fromisoformat(last_heartbeat_at) if last_heartbeat_at else None
+            grace = 30
+            status = int(bool(last and heartbeat_interval_seconds and datetime.now(timezone.utc) - last.astimezone(timezone.utc) <= timedelta(seconds=heartbeat_interval_seconds + grace)))
+        except (TypeError, ValueError):
+            status = 0
+    elif monitor_type in {"tcp", "ssh", "smtp"}:
+        check_port = port or ({"ssh": 22, "smtp": 587}.get(monitor_type, 80))
+        result = await check_tcp(target, check_port)
+        status = int(result["ok"])
+    elif monitor_type == "dns":
+        status = int((await check_dns(target))["ok"])
+    elif monitor_type == "ping":
+        status = int((await check_ping(target))["ok"])
+    elif monitor_type in {"http", "head"}:
+        result = await check_http(target, method="HEAD" if monitor_type == "head" else "GET", expected_code=expected_status_code)
+        status = int(result["ok"])
+    else:
+        status = 0
+
+    if monitor_type != "http":
+        return {"server_id": server_id, "raw_status": status, "effective_active": status, "cpu_usage": None, "ram_usage": None, "ssl_expiry_date": None, "ssl_days_remaining": None, "ssl_error": None}
 
     try:
         validated_target = await asyncio.to_thread(validate_and_resolve_target, target)
@@ -1418,6 +1488,11 @@ async def async_monitoring_job():
                 "hostname": s.hostname,
                 "server_role": s.server_role,
                 "target_address": s.target_address,
+                "monitor_type": s.monitor_type or "http",
+                "port": s.port,
+                "expected_status_code": s.expected_status_code or 200,
+                "heartbeat_interval_seconds": s.heartbeat_interval_seconds,
+                "last_heartbeat_at": s.last_heartbeat_at,
                 "previous_active": s.is_active if s.is_active is not None else 1
             }
             for s in servers
@@ -1442,7 +1517,12 @@ async def async_monitoring_job():
                 server_id=s["server_id"],
                 target_address=s["target_address"],
                 hostname=s["hostname"],
-                current_active=s["previous_active"]
+                current_active=s["previous_active"],
+                monitor_type=s["monitor_type"],
+                port=s["port"],
+                expected_status_code=s["expected_status_code"],
+                heartbeat_interval_seconds=s["heartbeat_interval_seconds"],
+                last_heartbeat_at=s["last_heartbeat_at"]
             )
             for s in server_list
         ]

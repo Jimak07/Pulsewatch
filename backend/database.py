@@ -52,6 +52,12 @@ class Server(Base):
     hostname = Column(String, nullable=False)
     server_role = Column(String, nullable=False)
     target_address = Column(String, nullable=False)
+    monitor_type = Column(String, nullable=False, default="http", server_default="http")
+    port = Column(Integer, nullable=True)
+    push_token = Column(String, nullable=True, unique=True, index=True)
+    expected_status_code = Column(Integer, nullable=False, default=200, server_default="200")
+    heartbeat_interval_seconds = Column(Integer, nullable=True)
+    last_heartbeat_at = Column(String, nullable=True)
     active_connections = Column(Integer, default=0)
     is_active = Column(Integer, default=1)
     ssl_expiry_date = Column(String, nullable=True)
@@ -100,6 +106,12 @@ def init_db():
     migrations = (
         ("Server", "ssl_expiry_date", 'ALTER TABLE "Server" ADD COLUMN ssl_expiry_date VARCHAR'),
         ("Server", "ssl_days_remaining", 'ALTER TABLE "Server" ADD COLUMN ssl_days_remaining INTEGER'),
+        ("Server", "monitor_type", 'ALTER TABLE "Server" ADD COLUMN monitor_type VARCHAR NOT NULL DEFAULT \'http\''),
+        ("Server", "port", 'ALTER TABLE "Server" ADD COLUMN port INTEGER'),
+        ("Server", "push_token", 'ALTER TABLE "Server" ADD COLUMN push_token VARCHAR'),
+        ("Server", "expected_status_code", 'ALTER TABLE "Server" ADD COLUMN expected_status_code INTEGER NOT NULL DEFAULT 200'),
+        ("Server", "heartbeat_interval_seconds", 'ALTER TABLE "Server" ADD COLUMN heartbeat_interval_seconds INTEGER'),
+        ("Server", "last_heartbeat_at", 'ALTER TABLE "Server" ADD COLUMN last_heartbeat_at VARCHAR'),
         ("users", "session_version", 'ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0'),
     )
     with engine.begin() as conn:
