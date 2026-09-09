@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -31,7 +33,7 @@
 [class*="hover\\:bg-"]:hover { background-color: var(--panel-muted) !important; }
 [class*="hover\\:text-"]:hover { color: var(--ink) !important; }
 
-body { background: var(--page-bg); color: var(--ink); transition: background-color 200ms ease, color 200ms ease; }
+body { background: var(--page-bg); color: var(--ink); font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; font-size: 16px; transition: background-color 200ms ease, color 200ms ease; }
 
 @keyframes loading-bar {
   0% {

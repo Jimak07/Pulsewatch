@@ -226,7 +226,7 @@ function AuthScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 font-mono text-white">
+    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 font-sans text-base text-white">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-8 space-y-6">
         <div className="text-center space-y-2">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 text-2xl mb-2">
@@ -1326,7 +1326,7 @@ function ServerCard({ server, onDelete }) {
   return (
     <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg transition-all hover:border-slate-500 flex flex-col h-full">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-2xl font-semibold text-blue-400 truncate pr-2">{server.hostname}</h2>
+        <h2 className="text-2xl font-bold text-blue-400 truncate pr-2">{server.hostname}</h2>
         <div className="flex items-center space-x-3 shrink-0">
           <span className="text-2xl select-none" title={server.is_active ? 'Online' : 'Offline'}>
             {server.is_active ? '🟢' : '🔴'}
@@ -1607,7 +1607,7 @@ function Dashboard() {
       </div>
 
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-slate-200">Monitored Infrastructure ({servers.length})</h2>
+        <h2 className="text-xl font-bold text-slate-200">Monitored Infrastructure ({servers.length})</h2>
         <div className="flex items-center space-x-2 text-xs font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
           <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
           <span className={wsConnected ? 'text-emerald-400 font-semibold' : 'text-amber-400'}>
@@ -2070,7 +2070,7 @@ function Layout({ children }) {
   };
 
   return (
-    <div className="flex min-h-screen bg-white text-black dark:bg-black dark:text-white font-mono overflow-hidden transition-colors duration-200">
+    <div className="flex min-h-screen bg-white text-black dark:bg-black dark:text-white font-sans text-base overflow-hidden transition-colors duration-200">
       <div 
         className={`fixed inset-y-0 left-0 z-30 bg-slate-800 border-slate-700 transition-all duration-300 ease-in-out md:relative
         ${isSidebarOpen ? "w-64 translate-x-0 border-r" : "w-64 -translate-x-full md:w-0 md:translate-x-0 md:border-r-0 md:overflow-hidden"}`}
@@ -2188,7 +2188,7 @@ function ProtectedApp() {
 function AuthLoadingScreen() {
   return (
     <main
-      className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-white font-mono"
+      className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-white font-sans text-base"
       aria-live="polite"
       aria-busy="true"
       aria-label="Checking your session"
