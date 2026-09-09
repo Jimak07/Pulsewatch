@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, createContext, useContext } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid, Brush } from 'recharts';
+import AddMonitorModal from './AddMonitorModal.jsx';
 
 const getApiBase = () => {
   const configuredBase = import.meta.env.VITE_API_BASE?.trim();
@@ -1424,6 +1425,7 @@ function Dashboard() {
   const [serverRole, setServerRole] = useState("");
   const [targetAddress, setTargetAddress] = useState("");
   const [copied, setCopied] = useState(false);
+  const [isMonitorModalOpen, setIsMonitorModalOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
 
   const apiBase = getApiBase();
@@ -1546,8 +1548,12 @@ function Dashboard() {
     <div className="max-w-7xl mx-auto space-y-8">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-          <h2 className="text-xl font-semibold mb-4 text-slate-200">Add New Server</h2>
-          <form onSubmit={handleAddServer} className="space-y-4">
+          <h2 className="text-xl font-semibold mb-4 text-slate-200">Add New Monitor</h2>
+          <button type="button" onClick={() => setIsMonitorModalOpen(true)} className="w-full rounded-lg bg-white px-4 py-3 font-bold text-black transition hover:bg-neutral-200 dark:bg-white dark:text-black">
+            Configure Monitor
+          </button>
+          {/* Legacy fields remain available to existing callers through the modal API. */}
+          <form onSubmit={handleAddServer} className="hidden">
             <div>
               <label className="block text-slate-400 text-sm mb-1">Hostname</label>
               <input 
@@ -1621,6 +1627,7 @@ function Dashboard() {
           <ServerCard key={server.server_id} server={server} onDelete={deleteServer} />
         ))}
       </div>
+      {isMonitorModalOpen && <AddMonitorModal apiBase={apiBase} authFetch={authFetch} onClose={() => setIsMonitorModalOpen(false)} onCreated={() => fetchServers()} />}
     </div>
   );
 }

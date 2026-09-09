@@ -398,6 +398,7 @@ class ServerCreate(BaseModel):
     push_token: Optional[str] = None
     expected_status_code: int = 200
     heartbeat_interval_seconds: Optional[int] = None
+    record_type: Optional[str] = "A"
 
     @validator("type")
     def validate_monitor_type(cls, value):
@@ -1058,6 +1059,7 @@ def add_server(server: ServerCreate, current_user_id: int = Depends(get_current_
         push_token=server.push_token or (secrets.token_urlsafe(32) if monitor_type == "push" else None),
         expected_status_code=server.expected_status_code,
         heartbeat_interval_seconds=server.heartbeat_interval_seconds,
+        dns_record_type=server.record_type,
         active_connections=0,
         is_active=1
     )

@@ -57,6 +57,7 @@ class Server(Base):
     push_token = Column(String, nullable=True, unique=True, index=True)
     expected_status_code = Column(Integer, nullable=False, default=200, server_default="200")
     heartbeat_interval_seconds = Column(Integer, nullable=True)
+    dns_record_type = Column(String, nullable=True, default="A", server_default="A")
     last_heartbeat_at = Column(String, nullable=True)
     active_connections = Column(Integer, default=0)
     is_active = Column(Integer, default=1)
@@ -111,6 +112,7 @@ def init_db():
         ("Server", "push_token", 'ALTER TABLE "Server" ADD COLUMN push_token VARCHAR'),
         ("Server", "expected_status_code", 'ALTER TABLE "Server" ADD COLUMN expected_status_code INTEGER NOT NULL DEFAULT 200'),
         ("Server", "heartbeat_interval_seconds", 'ALTER TABLE "Server" ADD COLUMN heartbeat_interval_seconds INTEGER'),
+        ("Server", "dns_record_type", 'ALTER TABLE "Server" ADD COLUMN dns_record_type VARCHAR DEFAULT \'A\''),
         ("Server", "last_heartbeat_at", 'ALTER TABLE "Server" ADD COLUMN last_heartbeat_at VARCHAR'),
         ("users", "session_version", 'ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0'),
     )
