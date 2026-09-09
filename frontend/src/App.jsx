@@ -2104,7 +2104,7 @@ function ProtectedApp() {
   const { user, sessionLoading } = useAuth();
 
   if (sessionLoading) {
-    return <div className="min-h-screen bg-slate-950" />;
+    return <AuthLoadingScreen />;
   }
 
   if (!user) {
@@ -2120,6 +2120,32 @@ function ProtectedApp() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
+  );
+}
+
+function AuthLoadingScreen() {
+  return (
+    <main
+      className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-white font-mono"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label="Checking your session"
+    >
+      <div className="flex w-full max-w-sm flex-col items-center gap-7 text-center">
+        <div className="relative flex h-20 w-20 items-center justify-center">
+          <div className="absolute inset-0 rounded-2xl border border-blue-500/30 bg-blue-500/5 animate-pulse" />
+          <div className="absolute inset-1 rounded-2xl border-2 border-transparent border-t-blue-400 border-r-cyan-400 animate-spin" />
+          <div className="h-3 w-3 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.8)]" />
+        </div>
+        <div className="space-y-2">
+          <p className="text-xl font-bold tracking-tight text-white">PulseWatch</p>
+          <p className="text-sm text-slate-400">Checking your secure session<span className="inline-block w-8 text-left after:content-['...'] after:animate-pulse" /></p>
+        </div>
+        <div className="h-1 w-40 overflow-hidden rounded-full bg-slate-800" aria-hidden="true">
+          <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-blue-500 to-emerald-400 animate-[loading-bar_1.4s_ease-in-out_infinite]" />
+        </div>
+      </div>
+    </main>
   );
 }
 
