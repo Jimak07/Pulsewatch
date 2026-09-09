@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, createContext, useContext } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
-import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid } from 'recharts';
+import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid, Brush } from 'recharts';
 
 const getApiBase = () => {
   const configuredBase = import.meta.env.VITE_API_BASE?.trim();
@@ -1165,6 +1165,8 @@ const formatHistoryData = (rawData, requestedStartTime) => {
         time: new Date(fillTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         fullDate: new Date(fillTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
         status: 1,
+        onlineStatus: 1,
+        offlineStatus: null,
         statusText: 'Unmonitored',
         cpu_usage: null,
         ram_usage: null
@@ -1193,8 +1195,10 @@ const formatHistoryData = (rawData, requestedStartTime) => {
           timestamp: fillTime,
           time: new Date(fillTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           fullDate: new Date(fillTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-          status: prevStatus,
-          statusText: prevStatus === 1 ? 'Online' : 'Offline',
+          status: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : 0,
+          onlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : null,
+          offlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? null : 0,
+          statusText: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 'Online' : 'Offline',
           cpu_usage: prevCpu,
           ram_usage: prevRam
         });
@@ -1208,8 +1212,10 @@ const formatHistoryData = (rawData, requestedStartTime) => {
             timestamp: cornerTime,
             time: new Date(cornerTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             fullDate: new Date(cornerTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-            status: prevStatus,
-            statusText: prevStatus === 1 ? 'Online' : 'Offline',
+            status: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : 0,
+            onlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : null,
+            offlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? null : 0,
+            statusText: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 'Online' : 'Offline',
             cpu_usage: prevCpu,
             ram_usage: prevRam
           });
@@ -1221,8 +1227,10 @@ const formatHistoryData = (rawData, requestedStartTime) => {
       timestamp: currentTime,
       time: new Date(currentTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       fullDate: new Date(currentTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-      status: currentStatus,
-      statusText: currentStatus === 1 ? 'Online' : 'Offline',
+      status: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 1 : 0,
+      onlineStatus: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 1 : null,
+      offlineStatus: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? null : 0,
+      statusText: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 'Online' : 'Offline',
       cpu_usage: currentCpu,
       ram_usage: currentRam
     });
@@ -1260,6 +1268,14 @@ const generateGradientStops = (data, onlineColor) => {
     }
   }
   return stops;
+};
+
+const formatHistoryTick = (unixTime, hours) => {
+  const date = new Date(unixTime);
+  if (hours >= 168) {
+    return date.toLocaleDateString([], { month: 'short', day: '2-digit' });
+  }
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
 function ServerCard({ server, onDelete }) {
@@ -1715,17 +1731,12 @@ function Analytics() {
         </div>
         <div className="h-64 w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={graphData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-              <defs>
-                <linearGradient id="colorStatusAnalytics" x1="0%" y1="0%" x2="100%" y2="0%">
-                  {generateGradientStops(graphData, '#3b82f6')}
-                </linearGradient>
-              </defs>
+            <LineChart data={graphData} margin={{ top: 5, right: 5, left: -20, bottom: 8 }}>
               <XAxis 
                 dataKey="timestamp" 
                 type="number"
                 domain={[startTime, endTime]}
-                tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                tickFormatter={(unixTime) => formatHistoryTick(unixTime, graphHours)}
                 stroke="#64748b" 
                 fontSize={11} 
                 tickMargin={8} 
@@ -1746,17 +1757,29 @@ function Analytics() {
                 formatter={(value, name, props) => [props.payload.statusText, 'Status']}
               />
               
-              <Line 
-                type="linear" 
-                dataKey="status" 
-                stroke="url(#colorStatusAnalytics)" 
+              <Line
+                type="stepAfter"
+                dataKey="onlineStatus"
+                stroke="#22c55e"
                 strokeWidth={2} 
-                dot={false} 
-                activeDot={(props) => {
-                  const { cx, cy, payload } = props;
-                  return <circle key={`dot-${cx}-${cy}`} cx={cx} cy={cy} r={5} fill={payload.status === 0 ? "#ef4444" : "#3b82f6"} stroke="#1e293b" strokeWidth={2} />;
-                }}
+                dot={false}
                 isAnimationActive={false}
+              />
+              <Line
+                type="stepAfter"
+                dataKey="offlineStatus"
+                stroke="#ef4444"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Brush
+                dataKey="timestamp"
+                height={22}
+                stroke="#64748b"
+                fill="#0f172a"
+                travellerWidth={10}
+                tickFormatter={(unixTime) => formatHistoryTick(unixTime, graphHours)}
               />
             </LineChart>
           </ResponsiveContainer>
