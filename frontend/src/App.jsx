@@ -30,8 +30,35 @@ const getWsUrl = () => {
 };
 
 const AuthContext = createContext();
+const ThemeContext = createContext();
 
 export const useAuth = () => useContext(AuthContext);
+export const useTheme = () => useContext(ThemeContext);
+
+function ThemeProvider({ children }) {
+  const [isDark, setIsDark] = useState(() => {
+    try {
+      return localStorage.getItem('pulsewatch-theme') !== 'light';
+    } catch {
+      return true;
+    }
+  });
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', isDark);
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    try { localStorage.setItem('pulsewatch-theme', isDark ? 'dark' : 'light'); } catch { /* storage may be unavailable */ }
+  }, [isDark]);
+
+  const toggleTheme = () => {
+    setIsLoading(true);
+    setIsDark(value => !value);
+    window.setTimeout(() => setIsLoading(false), 180);
+  };
+
+  return <ThemeContext.Provider value={{ isDark, isLoading, toggleTheme }}>{children}</ThemeContext.Provider>;
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -1369,7 +1396,7 @@ function ServerCard({ server, onDelete }) {
             <Line
               type="stepAfter"
               dataKey="onlineStatus"
-              stroke="#22c55e"
+              stroke="var(--chart-line)"
               strokeWidth={2} 
               dot={false}
               activeDot={{ r: 4, fill: '#22c55e', stroke: '#1e293b', strokeWidth: 2 }}
@@ -1378,7 +1405,7 @@ function ServerCard({ server, onDelete }) {
             <Line
               type="stepAfter"
               dataKey="offlineStatus"
-              stroke="#ef4444"
+              stroke="var(--chart-line)"
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4, fill: '#ef4444', stroke: '#1e293b', strokeWidth: 2 }}
@@ -1761,7 +1788,7 @@ function Analytics() {
               <Line
                 type="stepAfter"
                 dataKey="onlineStatus"
-                stroke="#22c55e"
+                stroke="var(--chart-line)"
                 strokeWidth={2} 
                 dot={false}
                 isAnimationActive={false}
@@ -1769,7 +1796,7 @@ function Analytics() {
               <Line
                 type="stepAfter"
                 dataKey="offlineStatus"
-                stroke="#ef4444"
+                stroke="var(--chart-line)"
                 strokeWidth={2}
                 dot={false}
                 isAnimationActive={false}
@@ -2034,6 +2061,7 @@ function Layout({ children }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const location = useLocation();
   const { user, logout } = useAuth();
+  const { isDark, isLoading: themeLoading, toggleTheme } = useTheme();
 
   const getPageTitle = () => {
     if (location.pathname === "/analytics") return "System Analytics";
@@ -2042,14 +2070,14 @@ function Layout({ children }) {
   };
 
   return (
-    <div className="flex min-h-screen bg-slate-900 text-white font-mono overflow-hidden">
+    <div className="flex min-h-screen bg-white text-black dark:bg-black dark:text-white font-mono overflow-hidden transition-colors duration-200">
       <div 
         className={`fixed inset-y-0 left-0 z-30 bg-slate-800 border-slate-700 transition-all duration-300 ease-in-out md:relative
         ${isSidebarOpen ? "w-64 translate-x-0 border-r" : "w-64 -translate-x-full md:w-0 md:translate-x-0 md:border-r-0 md:overflow-hidden"}`}
       >
         <div className="w-64 h-full flex flex-col">
           <div className="p-6 flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-blue-500">PulseWatch</h1>
+            <h1 className="text-2xl font-bold text-black dark:text-white">PulseWatch</h1>
             <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white text-2xl">
               ✕
             </button>
@@ -2101,6 +2129,16 @@ function Layout({ children }) {
           </div>
           
           <div className="flex items-center space-x-3">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              disabled={themeLoading}
+              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-neutral-300 bg-white text-black transition hover:bg-neutral-100 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-white dark:hover:bg-neutral-800"
+            >
+              {themeLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-400 border-t-black dark:border-t-white" /> : <span aria-hidden="true">{isDark ? '☀' : '☾'}</span>}
+            </button>
             {user && (
               <Link to="/settings" className="hidden sm:inline-block text-xs bg-slate-900 hover:bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-full text-slate-300 transition-colors">
                 👤 <strong className="text-blue-400">{user.username}</strong>
@@ -2176,9 +2214,11 @@ function AuthLoadingScreen() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <ProtectedApp />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <ProtectedApp />
+        </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

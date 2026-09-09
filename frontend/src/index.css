@@ -2,6 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  color-scheme: light;
+  --page-bg: #ffffff;
+  --panel-bg: #f8f8f8;
+  --panel-muted: #f0f0f0;
+  --ink: #000000;
+  --muted: #666666;
+  --line: #d9d9d9;
+  --chart-line: #333333;
+}
+
+.dark {
+  color-scheme: dark;
+  --page-bg: #000000;
+  --panel-bg: #111111;
+  --panel-muted: #202020;
+  --ink: #ffffff;
+  --muted: #b8b8b8;
+  --line: #333333;
+  --chart-line: #b8b8b8;
+}
+
+/* Keep legacy utility names visually monochromatic while components migrate. */
+[class*="bg-slate-"], [class*="bg-blue-"], [class*="bg-cyan-"], [class*="bg-purple-"], [class*="bg-emerald-"], [class*="bg-red-"], [class*="bg-amber-"] { background-color: var(--panel-bg) !important; }
+[class*="border-slate-"], [class*="border-blue-"], [class*="border-cyan-"], [class*="border-purple-"], [class*="border-emerald-"], [class*="border-red-"], [class*="border-amber-"] { border-color: var(--line) !important; }
+[class*="text-slate-"], [class*="text-blue-"], [class*="text-cyan-"], [class*="text-purple-"], [class*="text-emerald-"], [class*="text-red-"], [class*="text-amber-"], [class*="text-green-"] { color: var(--muted) !important; }
+[class*="hover\\:bg-"]:hover { background-color: var(--panel-muted) !important; }
+[class*="hover\\:text-"]:hover { color: var(--ink) !important; }
+
+body { background: var(--page-bg); color: var(--ink); transition: background-color 200ms ease, color 200ms ease; }
+
 @keyframes loading-bar {
   0% {
     transform: translateX(-110%);
