@@ -9,6 +9,7 @@ COPY database.py .
 COPY auth_security.py .
 COPY cors_config.py .
 COPY target_security.py .
+COPY checkers.py .
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt

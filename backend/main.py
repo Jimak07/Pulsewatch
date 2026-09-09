@@ -1,6 +1,9 @@
 from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pydantic import BaseModel, validator
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -21,8 +24,12 @@ from typing import Optional
 
 import asyncio
 import httpx
-from checkers import check_http, check_tcp, check_dns, check_ping
-from pathlib import Path
+try:
+    # Supports `uvicorn main:app` when /app is the backend directory.
+    from checkers import check_http, check_tcp, check_dns, check_ping
+except ModuleNotFoundError:
+    # Supports package imports such as `backend.main` from the project root.
+    from .checkers import check_http, check_tcp, check_dns, check_ping
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy import text, delete
