@@ -1153,7 +1153,8 @@ def get_server_history(server_id: int, hours: int = 1, current_user_id: int = De
             "status": c.status,
             "timestamp": c.timestamp,
             "cpu_usage": c.cpu_usage,
-            "ram_usage": c.ram_usage
+            "ram_usage": c.ram_usage,
+            "telemetry": json.loads(c.telemetry_json) if c.telemetry_json else {}
         }
         for c in checks
     ]
