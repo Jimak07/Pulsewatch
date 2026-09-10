@@ -398,6 +398,7 @@ function Settings() {
   const [channelSuccess, setChannelSuccess] = useState('');
   const [channelError, setChannelError] = useState('');
   const [testingChannelId, setTestingChannelId] = useState(null);
+  const [retentionStats, setRetentionStats] = useState(null);
 
   const fetchProfile = () => {
     authFetch(`${apiBase}/users/me`)
@@ -423,6 +424,10 @@ function Settings() {
   useEffect(() => {
     fetchProfile();
     fetchChannels();
+    authFetch(`${apiBase}/system/retention-stats`)
+      .then(res => res.json())
+      .then(data => setRetentionStats(data))
+      .catch(err => console.error(err));
   }, [apiBase]);
 
   const handleUpdateEmail = async (e) => {
@@ -1174,7 +1179,37 @@ function Settings() {
           )}
         </div>
       </div>
+
+      <RetentionPanel retentionStats={retentionStats} />
     </div>
+  );
+}
+
+function RetentionPanel({ retentionStats }) {
+  return (
+    <section className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+      <div className="flex items-center space-x-3 mb-6">
+        <span className="text-2xl">🗄️</span>
+        <div>
+          <h2 className="text-xl font-semibold text-slate-200">Database Retention & Storage Lifecycle</h2>
+          <p className="text-sm text-slate-400 mt-1">Automated 3-tier lifecycle: 30-day raw downsampling, 15-month hourly rollups, and auto-purge.</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          ['Hot Tier (Raw Metrics)', retentionStats ? retentionStats.raw_count.toLocaleString() : '...', 'Full resolution (< 30 days)'],
+          ['Warm Tier (Hourly Rollups)', retentionStats ? retentionStats.hourly_count.toLocaleString() : '...', 'Downsampled (30d - 15m)'],
+          ['Scheduled Rollup', retentionStats ? retentionStats.next_schedule : '02:00 UTC', 'Automated background cron'],
+          ['Max Hard Retention', '15 Months', 'Automatic cold purge'],
+        ].map(([label, value, hint]) => (
+          <div key={label} className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
+            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">{label}</span>
+            <div className="text-2xl font-bold text-slate-200">{value}</div>
+            <span className="text-xs text-slate-500 mt-1 block">{hint}</span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1499,6 +1534,7 @@ function Dashboard() {
   const [copied, setCopied] = useState(false);
   const [isMonitorModalOpen, setIsMonitorModalOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
+  const activeAlerts = servers.filter(server => !server.is_active);
 
   const apiBase = getApiBase();
   const { user, authFetch } = useAuth();
@@ -1694,6 +1730,22 @@ function Dashboard() {
         </div>
       </div>
 
+      <section className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+        <h3 className="text-xl font-semibold text-red-400 mb-4">Active Alerts</h3>
+        {activeAlerts.length === 0 ? (
+          <p className="rounded-lg border border-slate-700 bg-slate-900/50 px-4 py-4 text-center text-sm text-slate-400">All systems operational. No recent outages detected.</p>
+        ) : (
+          <div className="space-y-2">
+            {activeAlerts.map(server => (
+              <div key={server.server_id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-4 py-3 text-sm">
+                <span className="font-semibold text-red-300">🔴 {server.hostname}</span>
+                <span className="text-slate-400">{server.telemetry?.error || 'Monitor is offline'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {servers.map((server) => (
           <ServerCard key={server.server_id} server={server} onDelete={deleteServer} />
@@ -1708,25 +1760,15 @@ function Analytics() {
   const [servers, setServers] = useState([]);
   const [selectedServer, setSelectedServer] = useState("");
   const [matrix, setMatrix] = useState({ "24h": "0.00", "7d": "0.00", "14d": "0.00", "30d": "0.00" });
-  const [downtimeLogs, setDowntimeLogs] = useState([]);
-  const [uptimeLogs, setUptimeLogs] = useState([]);
   const [graphHours, setGraphHours] = useState(24);
   const [graphData, setGraphData] = useState([]);
   const [isCpuOpen, setIsCpuOpen] = useState(true);
   const [isRamOpen, setIsRamOpen] = useState(true);
-  const [retentionStats, setRetentionStats] = useState(null);
 
   const apiBase = getApiBase();
   const { authFetch } = useAuth();
   const endTime = new Date().getTime();
   const startTime = endTime - (graphHours * 3600000);
-
-  const fetchRetentionStats = () => {
-    authFetch(`${apiBase}/system/retention-stats`)
-      .then(res => res.json())
-      .then(data => setRetentionStats(data))
-      .catch(err => console.error(err));
-  };
 
   useEffect(() => {
     authFetch(`${apiBase}/servers`)
@@ -1741,7 +1783,6 @@ function Analytics() {
       })
       .catch(err => console.error(err));
       
-    fetchRetentionStats();
   }, [apiBase]);
 
   useEffect(() => {
@@ -1752,15 +1793,6 @@ function Analytics() {
       .then(data => setMatrix(data))
       .catch(err => console.error(err));
 
-    authFetch(`${apiBase}/servers/${selectedServer}/logs?status=0&limit=10`)
-      .then(res => res.json())
-      .then(data => setDowntimeLogs(data))
-      .catch(err => console.error(err));
-
-    authFetch(`${apiBase}/servers/${selectedServer}/logs?status=1&limit=10`)
-      .then(res => res.json())
-      .then(data => setUptimeLogs(data))
-      .catch(err => console.error(err));
   }, [selectedServer, apiBase]);
 
   useEffect(() => {
@@ -2033,105 +2065,6 @@ function Analytics() {
         )}
       </div>
 
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-          <div>
-            <div className="flex items-center space-x-2">
-              <span className="text-xl">🗄️</span>
-              <h3 className="text-xl font-semibold text-slate-200">Database Retention & Storage Lifecycle</h3>
-            </div>
-            <p className="text-sm text-slate-400 mt-1">
-              Automated 3-tier lifecycle: 30-day raw downsampling, 15-month hourly rollups, and auto-purge.
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Hot Tier (Raw Metrics)</span>
-            <div className="text-2xl font-bold text-blue-400">
-              {retentionStats ? retentionStats.raw_count.toLocaleString() : "..."}
-            </div>
-            <span className="text-xs text-slate-500 mt-1 block">Full resolution (&lt; 30 days)</span>
-          </div>
-
-          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Warm Tier (Hourly Rollups)</span>
-            <div className="text-2xl font-bold text-amber-400">
-              {retentionStats ? retentionStats.hourly_count.toLocaleString() : "..."}
-            </div>
-            <span className="text-xs text-slate-500 mt-1 block">Downsampled (30d - 15m)</span>
-          </div>
-
-          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Scheduled Rollup</span>
-            <div className="text-lg font-bold text-emerald-400">
-              {retentionStats ? retentionStats.next_schedule : "02:00 UTC"}
-            </div>
-            <span className="text-xs text-slate-500 mt-1 block">Automated background cron</span>
-          </div>
-
-          <div className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Max Hard Retention</span>
-            <div className="text-lg font-bold text-purple-400">15 Months</div>
-            <span className="text-xs text-slate-500 mt-1 block">Automatic cold purge</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-          <h3 className="text-xl font-semibold text-red-400 mb-4">Downtime Incident Log</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-slate-300">
-              <thead className="text-xs text-slate-500 uppercase bg-slate-900/50">
-                <tr>
-                  <th className="px-4 py-3 rounded-tl-lg">Status</th>
-                  <th className="px-4 py-3 rounded-tr-lg">Timestamp</th>
-                </tr>
-              </thead>
-              <tbody>
-                {downtimeLogs.length === 0 ? (
-                  <tr><td colSpan="2" className="px-4 py-4 text-center text-slate-500">No downtime incidents recorded.</td></tr>
-                ) : (
-                  downtimeLogs.map((log, idx) => (
-                    <tr key={idx} className="border-b border-slate-700/50 last:border-0">
-                      <td className="px-4 py-3 text-red-500">Offline</td>
-                      <td className="px-4 py-3">{new Date(log.timestamp).toLocaleString()}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-          <h3 className="text-xl font-semibold text-green-400 mb-4">Recent Uptime Log</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-slate-300">
-              <thead className="text-xs text-slate-500 uppercase bg-slate-900/50">
-                <tr>
-                  <th className="px-4 py-3 rounded-tl-lg">Status</th>
-                  <th className="px-4 py-3 rounded-tr-lg">Timestamp</th>
-                </tr>
-              </thead>
-              <tbody>
-                {uptimeLogs.length === 0 ? (
-                  <tr><td colSpan="2" className="px-4 py-4 text-center text-slate-500">No uptime logs recorded.</td></tr>
-                ) : (
-                  uptimeLogs.map((log, idx) => (
-                    <tr key={idx} className="border-b border-slate-700/50 last:border-0">
-                      <td className="px-4 py-3 text-green-500">Online</td>
-                      <td className="px-4 py-3">{new Date(log.timestamp).toLocaleString()}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
