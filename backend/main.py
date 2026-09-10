@@ -1137,18 +1137,25 @@ def delete_server(server_id: int, current_user_id: int = Depends(get_current_use
     return {"message": "Server deleted"}
 
 @app.get("/servers/{server_id}/history")
-def get_server_history(server_id: int, hours: int = 1, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_server_history(server_id: int, hours: int = 1, time_range: Optional[str] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     server_obj = db.query(Server).filter(Server.server_id == server_id, Server.user_id == current_user_id).first()
     if not server_obj:
         raise HTTPException(status_code=404, detail="Server not found")
         
+    if time_range:
+        range_days = {"24h": 1, "7d": 7, "30d": 30}
+        if time_range not in range_days:
+            raise HTTPException(status_code=400, detail="time_range must be one of 24h, 7d, or 30d")
+        hours = range_days[time_range] * 24
+    else:
+        time_range = "24h" if hours <= 24 else ("7d" if hours <= 168 else "30d")
     cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     checks = db.query(HealthCheck).filter(
         HealthCheck.server_id == server_id,
         HealthCheck.timestamp >= cutoff_time
     ).order_by(HealthCheck.timestamp.desc()).all()
     
-    return [
+    result = [
         {
             "status": c.status,
             "timestamp": c.timestamp,
@@ -1158,6 +1165,19 @@ def get_server_history(server_id: int, hours: int = 1, current_user_id: int = De
         }
         for c in checks
     ]
+    if time_range == "24h" and len(result) > 500:
+        result = result[::max(1, len(result) // 500)]
+    elif time_range in {"7d", "30d"}:
+        buckets = {}
+        for point in result:
+            dt = datetime.fromisoformat(point["timestamp"])
+            key = dt.date().isoformat()
+            bucket = buckets.setdefault(key, {"values": [], "statuses": [], "timestamp": dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()})
+            bucket["statuses"].append(point["status"])
+            latency = next((point["telemetry"].get(k) for k in ("response_time_ms", "handshake_time_ms", "latency_ms") if point["telemetry"].get(k) is not None), None)
+            if latency is not None: bucket["values"].append(latency)
+        result = [{"status": 1 if sum(b["statuses"]) >= len(b["statuses"]) / 2 else 0, "timestamp": b["timestamp"], "cpu_usage": None, "ram_usage": None, "telemetry": {"response_time_ms": round(sum(b["values"]) / len(b["values"]), 2) if b["values"] else None, "is_success": bool(b["statuses"] and sum(b["statuses"]) >= len(b["statuses"]) / 2)}} for b in buckets.values()]
+    return result
 
 @app.get("/servers/{server_id}/logs")
 def get_server_logs(server_id: int, status: int, limit: int = 50, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
