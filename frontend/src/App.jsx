@@ -394,6 +394,8 @@ function Settings() {
   const [channels, setChannels] = useState([]);
   const [channelType, setChannelType] = useState('webhook');
   const [destinationUrl, setDestinationUrl] = useState('');
+  const [targetServerId, setTargetServerId] = useState('');
+  const [monitors, setMonitors] = useState([]);
   const [channelLoading, setChannelLoading] = useState(false);
   const [channelSuccess, setChannelSuccess] = useState('');
   const [channelError, setChannelError] = useState('');
@@ -421,9 +423,25 @@ function Settings() {
       .catch(err => console.error(err));
   };
 
+  const fetchMonitors = () => {
+    authFetch(`${apiBase}/servers`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setMonitors(data);
+      })
+      .catch(err => console.error(err));
+  };
+
+  const monitorLabel = (serverId) => {
+    if (serverId === null || serverId === undefined) return 'All Monitors (Global)';
+    const match = monitors.find(m => String(m.server_id) === String(serverId));
+    return match ? match.hostname : `Monitor #${serverId}`;
+  };
+
   useEffect(() => {
     fetchProfile();
     fetchChannels();
+    fetchMonitors();
     authFetch(`${apiBase}/system/retention-stats`)
       .then(res => res.json())
       .then(data => setRetentionStats(data))
@@ -662,6 +680,7 @@ function Settings() {
         body: JSON.stringify({
           channel_type: channelType,
           destination_url: destinationUrl.trim(),
+          server_id: targetServerId === '' ? null : Number(targetServerId),
           is_active: 1
         })
       });
@@ -1073,7 +1092,7 @@ function Settings() {
 
         <form onSubmit={handleCreateChannel} className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/70 mb-6">
           <h3 className="text-sm font-semibold text-slate-300 mb-4">Add Notification Destination</h3>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
               <label className="block text-xs text-slate-400 mb-1 font-medium">Channel Type</label>
               <select
@@ -1088,7 +1107,20 @@ function Settings() {
                 <option value="email">Email Alert</option>
               </select>
             </div>
-            <div className="md:col-span-2">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1 font-medium">Target Monitor</label>
+              <select
+                value={targetServerId}
+                onChange={(e) => setTargetServerId(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="">All Monitors (Global)</option>
+                {monitors.map((m) => (
+                  <option key={m.server_id} value={m.server_id}>{m.hostname}</option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-3">
               <label className="block text-xs text-slate-400 mb-1 font-medium">Destination URL or Email Address</label>
               <input
                 type="text"
@@ -1138,6 +1170,9 @@ function Settings() {
                           ch.is_active ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800' : 'bg-slate-800 text-slate-500 border border-slate-700'
                         }`}>
                           {ch.is_active ? 'Active' : 'Muted'}
+                        </span>
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-blue-950/60 text-blue-300 border border-blue-900">
+                          {monitorLabel(ch.server_id)}
                         </span>
                       </div>
                       <div className="text-xs text-slate-400 font-mono mt-1 break-all">

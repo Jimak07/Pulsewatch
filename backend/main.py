@@ -64,6 +64,14 @@ except CorsConfigurationError as exc:
 
 ssl_alerts_dispatched: dict[int, set[int]] = {}
 
+# Outbound alert delivery tuning.
+# TLS verification stays enabled unless an operator explicitly opts out with
+# ALERT_HTTP_VERIFY=false (only for internal endpoints using self-signed certs).
+ALERT_HTTP_VERIFY = os.getenv("ALERT_HTTP_VERIFY", "true").strip().lower() not in {"0", "false", "no", "off"}
+ALERT_DISPATCH_ATTEMPTS = 3
+ALERT_DISPATCH_BACKOFF_SECONDS = 1.0
+DISCORD_FIELD_CHAR_LIMIT = 1024
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[int, list[WebSocket]] = {}
@@ -416,11 +424,13 @@ class NotificationChannelCreate(BaseModel):
     channel_type: str
     destination_url: str
     is_active: Optional[int] = 1
+    server_id: Optional[int] = None
 
 class NotificationChannelUpdate(BaseModel):
     channel_type: Optional[str] = None
     destination_url: Optional[str] = None
     is_active: Optional[int] = None
+    server_id: Optional[int] = None
 
 def generate_otp_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
@@ -513,10 +523,11 @@ def send_alert_email(to_email: str, alert_data: dict):
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Role:</strong> {alert_data.get('server_role', 'Server')}</div>
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Target Address:</strong> {alert_data.get('target_address', 'N/A')}</div>
                 <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Status:</strong> <span style="color: {status_color}; font-weight: bold;">{status_str}</span></div>
+                <div style="margin-bottom: 6px;"><strong style="color: #94a3b8;">Reason:</strong> <span style="color: {status_color}; font-weight: bold;">{alert_data.get('reason') or 'Health check failed'}</span></div>
                 <div><strong style="color: #94a3b8;">Timestamp:</strong> {alert_data.get('timestamp', '')}</div>
             """
             title_html = f"Server '{hostname}' is {status_str}"
-            text_content = f"PulseWatch Alert: Server '{hostname}' transitioned to {status_str}.\nRole: {alert_data.get('server_role', 'Server')}\nTarget: {alert_data.get('target_address', 'N/A')}\nTimestamp: {alert_data.get('timestamp', '')}\n"
+            text_content = f"PulseWatch Alert: Server '{hostname}' transitioned to {status_str}.\nRole: {alert_data.get('server_role', 'Server')}\nTarget: {alert_data.get('target_address', 'N/A')}\nReason: {alert_data.get('reason') or 'Health check failed'}\nTimestamp: {alert_data.get('timestamp', '')}\n"
         else:
             status_color = "#22c55e"
             badge_text = "RECOVERY NOTIFICATION"
@@ -566,6 +577,32 @@ def send_alert_email(to_email: str, alert_data: dict):
     except Exception as e:
         print(f"[ALERT EMAIL ERROR] Failed to send alert email to {to_email}: {e}", flush=True)
 
+def _truncate_field(value, limit: int) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+async def post_alert_with_retries(client: httpx.AsyncClient, url: str, payload: dict) -> Optional[httpx.Response]:
+    """POST an alert payload, retrying transient delivery failures with backoff."""
+    last_error = None
+    for attempt in range(1, ALERT_DISPATCH_ATTEMPTS + 1):
+        try:
+            response = await client.post(url, json=payload, timeout=8.0)
+            if 200 <= response.status_code < 300:
+                return response
+            last_error = f"HTTP {response.status_code}"
+        except httpx.HTTPError as exc:
+            last_error = str(exc) or exc.__class__.__name__
+        print(
+            f"[DISPATCH RETRY] {url} not delivered ({last_error}); attempt {attempt}/{ALERT_DISPATCH_ATTEMPTS}.",
+            flush=True,
+        )
+        if attempt < ALERT_DISPATCH_ATTEMPTS:
+            await asyncio.sleep(ALERT_DISPATCH_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+    print(f"[DISPATCH FAILED] Giving up on {url} after {ALERT_DISPATCH_ATTEMPTS} attempt(s): {last_error}", flush=True)
+    return None
+
 async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict, alert_data: dict):
     channel_type = (channel.get("channel_type") or "").strip().lower()
     destination = (channel.get("destination_url") or "").strip()
@@ -578,11 +615,13 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
     alert_type = alert_data.get("alert_type", "STATE_TRANSITION")
     is_ssl = alert_type == "SSL_EXPIRATION_WARNING"
     is_down = status_str == "DOWN"
+    # Failure detail captured by the probe, e.g. "Connection refused" or "Expected HTTP 200, got 503".
+    reason = alert_data.get("reason") or alert_data.get("error")
     emoji = "⚠️" if is_ssl else ("🔴" if is_down else "🟢")
 
     try:
         if channel_type == "email":
-            send_alert_email(destination, alert_data)
+            await asyncio.to_thread(send_alert_email, destination, alert_data)
         elif channel_type == "discord":
             embed_color = 16107020 if is_ssl else (15158332 if is_down else 3066993)
             fields = [
@@ -593,6 +632,8 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
             if is_ssl:
                 fields.append({"name": "SSL Expiry", "value": alert_data.get("ssl_expiry_date", "N/A"), "inline": True})
                 fields.append({"name": "Days Left", "value": str(alert_data.get("ssl_days_remaining", "N/A")), "inline": True})
+            if reason:
+                fields.append({"name": "Reason", "value": _truncate_field(reason, DISCORD_FIELD_CHAR_LIMIT), "inline": False})
             fields.append({"name": "Timestamp", "value": alert_data.get("timestamp", ""), "inline": False})
             
             payload = {
@@ -606,16 +647,20 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
                     }
                 ]
             }
-            res = await client.post(destination, json=payload, timeout=8.0)
-            print(f"[DISPATCH DISCORD] Status {res.status_code} for {destination}", flush=True)
+            res = await post_alert_with_retries(client, destination, payload)
+            if res is not None:
+                print(f"[DISPATCH DISCORD] Status {res.status_code} for {destination}", flush=True)
         elif channel_type == "slack":
             if is_ssl:
                 msg_txt = f"⚠️ *[PulseWatch SSL Warning]* SSL Certificate for *{hostname}* ({alert_data.get('target_address')}) will expire in *{alert_data.get('ssl_days_remaining')} day(s)* on {alert_data.get('ssl_expiry_date')}."
             else:
                 msg_txt = f"{emoji} *[PulseWatch Alert]* Server *{hostname}* is now *{status_str}*!\n*Target:* {alert_data.get('target_address')}\n*Time:* {alert_data.get('timestamp')}"
+            if reason:
+                msg_txt = f"{msg_txt}\n*Reason:* {reason}"
             payload = {"text": msg_txt}
-            res = await client.post(destination, json=payload, timeout=8.0)
-            print(f"[DISPATCH SLACK] Status {res.status_code} for {destination}", flush=True)
+            res = await post_alert_with_retries(client, destination, payload)
+            if res is not None:
+                print(f"[DISPATCH SLACK] Status {res.status_code} for {destination}", flush=True)
         elif channel_type == "telegram":
             payload = {
                 "event": "ssl.expiration_warning" if is_ssl else "server.status_change",
@@ -623,11 +668,13 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
                 "status": status_str,
                 "target_address": alert_data.get("target_address"),
                 "ssl_expiry_date": alert_data.get("ssl_expiry_date"),
+                "reason": reason,
                 "ssl_days_remaining": alert_data.get("ssl_days_remaining"),
                 "timestamp": alert_data.get("timestamp")
             }
-            res = await client.post(destination, json=payload, timeout=8.0)
-            print(f"[DISPATCH TELEGRAM] Status {res.status_code} for {destination}", flush=True)
+            res = await post_alert_with_retries(client, destination, payload)
+            if res is not None:
+                print(f"[DISPATCH TELEGRAM] Status {res.status_code} for {destination}", flush=True)
         else:
             payload = {
                 "event": "ssl.expiration_warning" if is_ssl else "server.status_change",
@@ -637,13 +684,15 @@ async def dispatch_single_notification(client: httpx.AsyncClient, channel: dict,
                 "target_address": alert_data.get("target_address"),
                 "status": status_str,
                 "previous_status": alert_data.get("previous_status"),
+                "reason": reason,
                 "ssl_expiry_date": alert_data.get("ssl_expiry_date"),
                 "ssl_days_remaining": alert_data.get("ssl_days_remaining"),
                 "timestamp": alert_data.get("timestamp"),
                 "message": alert_data.get("message", f"Server '{hostname}' alert")
             }
-            res = await client.post(destination, json=payload, timeout=8.0)
-            print(f"[DISPATCH WEBHOOK] Status {res.status_code} for {destination}", flush=True)
+            res = await post_alert_with_retries(client, destination, payload)
+            if res is not None:
+                print(f"[DISPATCH WEBHOOK] Status {res.status_code} for {destination}", flush=True)
     except Exception as e:
         print(f"[DISPATCH ERROR] Failed to send alert to {channel_type} ({destination}): {e}", flush=True)
 
@@ -666,18 +715,29 @@ async def dispatch_state_transition_alerts(transitions: list[dict]):
         for ch in channels:
             user_channels.setdefault(ch.user_id, []).append({
                 "id": ch.id,
+                "server_id": ch.server_id,
                 "channel_type": ch.channel_type,
                 "destination_url": ch.destination_url
             })
     finally:
         db.close()
 
-    async with httpx.AsyncClient(verify=False) as client:
+    async with httpx.AsyncClient(verify=ALERT_HTTP_VERIFY) as client:
         tasks = []
         for t in transitions:
             u_id = t.get("user_id")
-            dest_channels = user_channels.get(u_id, [])
-            print(f"[ALERT DISPATCH] Preparing to dispatch {t['status']} alert for server '{t['hostname']}' to {len(dest_channels)} active notification channel(s)...", flush=True)
+            monitor_id = t.get("server_id")
+            if u_id is None:
+                candidate_channels = [ch for owned in user_channels.values() for ch in owned]
+            else:
+                candidate_channels = user_channels.get(u_id, [])
+            # A channel receives this alert when it is pinned to this exact monitor,
+            # or when it is account-wide (server_id IS NULL) as a global fallback.
+            dest_channels = [
+                ch for ch in candidate_channels
+                if ch["server_id"] is None or ch["server_id"] == monitor_id
+            ]
+            print(f"[ALERT DISPATCH] Preparing to dispatch {t['status']} alert for server '{t['hostname']}' to {len(dest_channels)} matching notification channel(s)...", flush=True)
             for ch in dest_channels:
                 tasks.append(dispatch_single_notification(client, ch, t))
         if tasks:
@@ -1132,9 +1192,16 @@ def delete_server(server_id: int, current_user_id: int = Depends(get_current_use
     db.query(HealthCheck).filter(HealthCheck.server_id == server_id).delete()
     db.query(MetricRaw).filter(MetricRaw.server_id == server_id).delete()
     db.query(MetricHourly).filter(MetricHourly.server_id == server_id).delete()
+    # Channels pinned to this monitor go with it; account-wide channels
+    # (server_id IS NULL) are untouched. ON DELETE CASCADE covers this as well,
+    # but deleting explicitly keeps the behaviour identical on databases where
+    # foreign keys are not enforced.
+    removed_channels = db.query(NotificationChannel).filter(
+        NotificationChannel.server_id == server_id
+    ).delete(synchronize_session=False)
     db.delete(server_obj)
     db.commit()
-    return {"message": "Server deleted"}
+    return {"message": "Server deleted", "notification_channels_removed": removed_channels or 0}
 
 @app.get("/servers/{server_id}/history")
 def get_server_history(server_id: int, hours: int = 1, time_range: Optional[str] = None, current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1264,6 +1331,25 @@ def get_retention_stats(current_user_id: int = Depends(get_current_user), db: Se
         "next_schedule": "Daily at 02:00 UTC"
     }
 
+def _provided_fields(model) -> set:
+    """Return the fields the client explicitly sent, across pydantic v1/v2."""
+    fields = getattr(model, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(model, "__fields_set__", None)
+    return set(fields) if fields else set()
+
+def resolve_channel_server_id(db: Session, user_id: int, server_id: Optional[int]) -> Optional[int]:
+    """Validate a channel's monitor target. None keeps the channel account-wide."""
+    if server_id is None:
+        return None
+    monitor = db.query(Server.server_id).filter(
+        Server.server_id == server_id,
+        Server.user_id == user_id
+    ).first()
+    if not monitor:
+        raise HTTPException(status_code=404, detail="Target monitor not found for this account")
+    return server_id
+
 @app.get("/notification-channels")
 def get_notification_channels(current_user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     channels = db.query(NotificationChannel).filter(NotificationChannel.user_id == current_user_id).all()
@@ -1271,6 +1357,7 @@ def get_notification_channels(current_user_id: int = Depends(get_current_user), 
         {
             "id": c.id,
             "user_id": c.user_id,
+            "server_id": c.server_id,
             "channel_type": c.channel_type,
             "destination_url": c.destination_url,
             "is_active": c.is_active
@@ -1291,6 +1378,7 @@ def create_notification_channel(data: NotificationChannelCreate, current_user_id
         
     channel = NotificationChannel(
         user_id=current_user_id,
+        server_id=resolve_channel_server_id(db, current_user_id, data.server_id),
         channel_type=clean_type,
         destination_url=clean_url,
         is_active=1 if data.is_active is None or data.is_active == 1 else 0
@@ -1301,6 +1389,7 @@ def create_notification_channel(data: NotificationChannelCreate, current_user_id
     return {
         "id": channel.id,
         "user_id": channel.user_id,
+        "server_id": channel.server_id,
         "channel_type": channel.channel_type,
         "destination_url": channel.destination_url,
         "is_active": channel.is_active,
@@ -1331,12 +1420,16 @@ def update_notification_channel(channel_id: int, data: NotificationChannelUpdate
         
     if data.is_active is not None:
         channel.is_active = 1 if data.is_active else 0
+
+    if "server_id" in _provided_fields(data):
+        channel.server_id = resolve_channel_server_id(db, current_user_id, data.server_id)
         
     db.commit()
     db.refresh(channel)
     return {
         "id": channel.id,
         "user_id": channel.user_id,
+        "server_id": channel.server_id,
         "channel_type": channel.channel_type,
         "destination_url": channel.destination_url,
         "is_active": channel.is_active,
@@ -1374,10 +1467,11 @@ async def test_notification_channel(channel_id: int, current_user_id: int = Depe
         "status": "UP",
         "previous_status": "DOWN",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "reason": "Test alert dispatched from the PulseWatch dashboard.",
         "message": "PulseWatch notification channel verification test"
     }
     
-    async with httpx.AsyncClient(verify=False) as client:
+    async with httpx.AsyncClient(verify=ALERT_HTTP_VERIFY) as client:
         await dispatch_single_notification(client, {
             "id": channel.id,
             "channel_type": channel.channel_type,
@@ -1397,6 +1491,7 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     ssl_expiry_date = None
     ssl_days_remaining = None
     ssl_error = None
+    probe_error = None
     telemetry = {"is_success": False}
     
     print(f"[PROBE] Checking server #{server_id} ('{hostname}') -> target: {target}", flush=True)
@@ -1469,10 +1564,15 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
             telemetry["status_code"] = response.status_code
             telemetry["response_time_ms"] = telemetry.get("response_time_ms") or None
             telemetry["ssl_days_left"] = ssl_days_remaining
-            telemetry["is_success"] = response.status_code == 200 and not ssl_error
             if response.status_code == expected_status_code and not ssl_error:
                 status = 1
-        except (httpx.ConnectError, ssl.SSLError) as e:
+            elif ssl_error:
+                probe_error = ssl_error
+            else:
+                probe_error = f"Expected HTTP {expected_status_code}, got {response.status_code}"
+            telemetry["is_success"] = status == 1
+        except (httpx.ConnectError, ssl.SSLError, httpx.HTTPError) as e:
+            probe_error = str(e) or e.__class__.__name__
             if not ssl_error and validated_target.scheme == "https":
                 ssl_error = str(e)
                 ssl_days_remaining = 0
@@ -1497,8 +1597,12 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
     except UnsafeTargetError as e:
         print(f"[PROBE BLOCKED] Server #{server_id} ('{hostname}') target rejected: {e}", flush=True)
         status = 0
+        probe_error = f"Target rejected: {e}"
     except Exception:
         status = 0
+
+    if not telemetry.get("error"):
+        telemetry["error"] = probe_error or ssl_error
 
     if status == 1 and not ssl_error:
         prev_strikes = consecutive_failures.get(server_id, 0)
@@ -1526,8 +1630,9 @@ async def check_single_server(client: httpx.AsyncClient, server_id: int, target_
         "ram_usage": ram_usage,
         "ssl_expiry_date": ssl_expiry_date,
         "ssl_days_remaining": ssl_days_remaining,
-        "ssl_error": ssl_error
-        ,"telemetry": {**telemetry, "is_success": bool(status and not ssl_error)}
+        "ssl_error": ssl_error,
+        "error": telemetry.get("error"),
+        "telemetry": {**telemetry, "is_success": bool(status and not ssl_error)}
     }
 
 async def async_monitoring_job():
@@ -1599,6 +1704,7 @@ async def async_monitoring_job():
             
             s_info = server_list[idx]
             prev_active = s_info["previous_active"]
+            probe_reason = res.get("error") or (res.get("telemetry") or {}).get("error")
 
             if prev_active == 1 and effective_active == 0:
                 print(f"[STATE TRANSITION] Outage detected: Server #{server_id} ('{s_info.get('hostname')}') transitioned from UP -> DOWN!", flush=True)
@@ -1611,7 +1717,8 @@ async def async_monitoring_job():
                     "status": "DOWN",
                     "previous_status": "UP",
                     "timestamp": timestamp,
-                    "message": f"Server '{s_info.get('hostname')}' transitioned to DOWN"
+                    "reason": probe_reason or "Health check failed; the target did not return a healthy response.",
+                    "message": f"Server '{s_info.get('hostname')}' is DOWN: {probe_reason or 'health check failed'}"
                 })
             elif prev_active == 0 and effective_active == 1:
                 print(f"[STATE TRANSITION] Recovery detected: Server #{server_id} ('{s_info.get('hostname')}') transitioned from DOWN -> UP!", flush=True)
@@ -1624,6 +1731,7 @@ async def async_monitoring_job():
                     "status": "UP",
                     "previous_status": "DOWN",
                     "timestamp": timestamp,
+                    "reason": "Health check is passing again.",
                     "message": f"Server '{s_info.get('hostname')}' recovered to UP"
                 })
 
