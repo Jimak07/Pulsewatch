@@ -1,7 +1,70 @@
 import { useState, useEffect, useMemo, createContext, useContext } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
-import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis, XAxis, CartesianGrid, Brush } from 'recharts';
+import {
+  LineChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  YAxis,
+  XAxis,
+  CartesianGrid,
+  Brush,
+  AreaChart,
+  Area,
+} from 'recharts';
+import {
+  Activity,
+  Server,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Bell,
+  Mail,
+  Lock,
+  Wifi,
+  WifiOff,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  Cpu,
+  HardDrive,
+  Clock,
+  Trash2,
+  Copy,
+  Check,
+  Sun,
+  Moon,
+  Plus,
+  Search,
+  ExternalLink,
+  Radio,
+  Eye,
+  Settings as SettingsIcon,
+  BarChart3,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  X,
+  Send,
+  Terminal,
+  Heart,
+  Zap,
+  Globe,
+  Sliders,
+  Database,
+  Key,
+} from 'lucide-react';
+
 import AddMonitorModal from './AddMonitorModal.jsx';
+import { Button } from './components/ui/button';
+import { Badge } from './components/ui/badge';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './components/ui/card';
+import { Input } from './components/ui/input';
+import { Switch } from './components/ui/switch';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
+import { ChartContainer, ChartTooltipContent } from './components/ui/chart';
+import { HeartbeatStrip } from './components/ui/heartbeat-strip';
+import { EkgLoadingScreen } from './components/ui/ekg-loader';
 
 const getApiBase = () => {
   const configuredBase = import.meta.env.VITE_API_BASE?.trim();
@@ -21,9 +84,6 @@ const getWsUrl = () => {
     }
     return wsUrl.toString();
   }
-  // The API exposes the WebSocket at the root `/ws` route. Resolve it from
-  // the API origin so an accidental path in VITE_API_BASE cannot produce a
-  // mismatched handshake URL.
   const apiUrl = new URL('/ws', `${getApiBase()}/`);
   apiUrl.protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
   apiUrl.search = '';
@@ -44,21 +104,24 @@ function ThemeProvider({ children }) {
       return true;
     }
   });
-  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
     document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
-    try { localStorage.setItem('pulsewatch-theme', isDark ? 'dark' : 'light'); } catch { /* storage may be unavailable */ }
+    try {
+      localStorage.setItem('pulsewatch-theme', isDark ? 'dark' : 'light');
+    } catch {}
   }, [isDark]);
 
   const toggleTheme = () => {
-    setIsLoading(true);
-    setIsDark(value => !value);
-    window.setTimeout(() => setIsLoading(false), 180);
+    setIsDark((val) => !val);
   };
 
-  return <ThemeContext.Provider value={{ isDark, isLoading, toggleTheme }}>{children}</ThemeContext.Provider>;
+  return (
+    <ThemeContext.Provider value={{ isDark, toggleTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
 }
 
 export function AuthProvider({ children }) {
@@ -84,7 +147,6 @@ export function AuthProvider({ children }) {
         if (res.ok) {
           setUser(await res.json());
         } else if (res.status === 401) {
-          // A missing/expired cookie is the normal signed-out state.
           setUser(null);
         }
       } catch (error) {
@@ -104,7 +166,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username: cleanUser, password })
+      body: JSON.stringify({ username: cleanUser, password }),
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
@@ -126,7 +188,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username: cleanUser, otp_code: cleanOtp })
+      body: JSON.stringify({ username: cleanUser, otp_code: cleanOtp }),
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
@@ -144,7 +206,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username: cleanUser, password })
+      body: JSON.stringify({ username: cleanUser, password }),
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
@@ -156,9 +218,7 @@ export function AuthProvider({ children }) {
   };
 
   const updateUser = (newUsername) => {
-    setUser(prev => {
-      return { ...(prev || {}), username: newUsername };
-    });
+    setUser((prev) => ({ ...(prev || {}), username: newUsername }));
   };
 
   const logout = async () => {
@@ -167,7 +227,18 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, sessionLoading, login, verify2fa, register, logout, authFetch, updateUser }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        sessionLoading,
+        login,
+        verify2fa,
+        register,
+        logout,
+        authFetch,
+        updateUser,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -185,6 +256,7 @@ function AuthScreen() {
   const [twoFaEmail, setTwoFaEmail] = useState('');
 
   const { login, verify2fa, register } = useAuth();
+  const { isDark, toggleTheme } = useTheme();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -220,136 +292,1330 @@ function AuthScreen() {
     }
   };
 
-  const resetToLogin = () => {
-    setRequire2fa(false);
-    setOtpCode('');
-    setError('');
-  };
+  return (
+    <div className="min-h-screen bg-neutral-50 dark:bg-black flex flex-col items-center justify-center p-4 font-sans text-neutral-950 dark:text-neutral-50 relative selection:bg-neutral-900 selection:text-white dark:selection:bg-white dark:selection:text-black">
+      <div className="absolute top-6 right-6">
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={toggleTheme}
+          aria-label="Toggle theme"
+        >
+          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+      </div>
+
+      <div className="w-full max-w-md space-y-6">
+        <div className="text-center space-y-2">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-neutral-900 text-white dark:bg-neutral-50 dark:text-neutral-950 shadow-lg mb-2">
+            <Activity className="h-6 w-6 animate-pulse text-emerald-500" />
+          </div>
+          <h1 className="text-2xl font-extrabold tracking-tight font-mono">PULSEWATCH</h1>
+          <p className="text-xs uppercase tracking-widest text-neutral-500 dark:text-neutral-400">
+            Enterprise Infrastructure Telemetry
+          </p>
+        </div>
+
+        <Card className="shadow-2xl border-neutral-200 dark:border-neutral-800 backdrop-blur-md">
+          <CardHeader className="space-y-1 pb-4">
+            {!require2fa && (
+              <div className="grid grid-cols-2 p-1 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRegister(false);
+                    setError('');
+                  }}
+                  className={`py-1.5 text-xs font-semibold rounded-md transition-all ${
+                    !isRegister
+                      ? 'bg-white text-neutral-950 dark:bg-neutral-950 dark:text-neutral-50 shadow-sm'
+                      : 'text-neutral-500 hover:text-neutral-950 dark:hover:text-neutral-50'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRegister(true);
+                    setError('');
+                  }}
+                  className={`py-1.5 text-xs font-semibold rounded-md transition-all ${
+                    isRegister
+                      ? 'bg-white text-neutral-950 dark:bg-neutral-950 dark:text-neutral-50 shadow-sm'
+                      : 'text-neutral-500 hover:text-neutral-950 dark:hover:text-neutral-50'
+                  }`}
+                >
+                  Register
+                </button>
+              </div>
+            )}
+          </CardHeader>
+
+          <CardContent className="space-y-4 pt-2">
+            {error && (
+              <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs font-medium text-red-600 dark:text-red-400">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {require2fa ? (
+              <form onSubmit={handleVerify2fa} className="space-y-4">
+                <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/60 p-4 text-center space-y-2">
+                  <ShieldCheck className="h-8 w-8 mx-auto text-emerald-500" />
+                  <h2 className="text-sm font-bold tracking-tight">Two-Factor Authentication</h2>
+                  <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                    A 6-digit verification code has been dispatched to{' '}
+                    <strong className="text-neutral-950 dark:text-neutral-50">{twoFaEmail}</strong>
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 text-center">
+                    Enter Verification Code
+                  </label>
+                  <Input
+                    type="text"
+                    maxLength="6"
+                    required
+                    autoFocus
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value)}
+                    placeholder="123456"
+                    className="text-center tracking-widest font-mono text-xl py-2"
+                  />
+                </div>
+
+                <Button type="submit" disabled={loading} className="w-full">
+                  {loading ? 'Verifying...' : 'Verify & Continue'}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setRequire2fa(false);
+                    setOtpCode('');
+                    setError('');
+                  }}
+                  className="w-full text-xs"
+                >
+                  Back to Login
+                </Button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                    Username
+                  </label>
+                  <Input
+                    type="text"
+                    required
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="e.g. devops-admin"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                    Password
+                  </label>
+                  <Input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                  />
+                </div>
+
+                <Button type="submit" disabled={loading} className="w-full font-bold">
+                  {loading
+                    ? 'Authenticating...'
+                    : isRegister
+                    ? 'Create Tenant Account'
+                    : 'Sign In to Cluster'}
+                </Button>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+const formatHistoryData = (rawData, requestedStartTime) => {
+  if (!rawData || rawData.length === 0) return [];
+  const reversed = [...rawData].reverse();
+  const formatted = [];
+
+  const firstLogTime = new Date(reversed[0].timestamp).getTime();
+
+  if (requestedStartTime && requestedStartTime < firstLogTime) {
+    let fillTime = requestedStartTime;
+    while (fillTime < firstLogTime - 60000) {
+      formatted.push({
+        timestamp: fillTime,
+        time: new Date(fillTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        fullDate: new Date(fillTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
+        status: 1,
+        onlineStatus: 1,
+        offlineStatus: null,
+        statusText: 'Unmonitored',
+        cpu_usage: null,
+        ram_usage: null,
+      });
+      fillTime += 60000;
+    }
+  }
+
+  for (let i = 0; i < reversed.length; i++) {
+    const currentLog = reversed[i];
+    const currentTime = new Date(currentLog.timestamp).getTime();
+    const currentStatus = currentLog.status;
+    const currentCpu = currentLog.cpu_usage != null ? currentLog.cpu_usage : null;
+    const currentRam = currentLog.ram_usage != null ? currentLog.ram_usage : null;
+
+    if (i > 0) {
+      const prevLog = reversed[i - 1];
+      const prevTime = new Date(prevLog.timestamp).getTime();
+      const prevStatus = prevLog.status;
+      const prevCpu = prevLog.cpu_usage != null ? prevLog.cpu_usage : null;
+      const prevRam = prevLog.ram_usage != null ? prevLog.ram_usage : null;
+
+      let fillTime = prevTime + 30000;
+      while (fillTime < currentTime - 30000) {
+        formatted.push({
+          timestamp: fillTime,
+          time: new Date(fillTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          fullDate: new Date(fillTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
+          status: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : 0,
+          onlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : null,
+          offlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? null : 0,
+          statusText: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 'Online' : 'Offline',
+          cpu_usage: prevCpu,
+          ram_usage: prevRam,
+        });
+        fillTime += 30000;
+      }
+
+      if (prevStatus !== currentStatus) {
+        const cornerTime = currentTime - 1000;
+        if (cornerTime > prevTime) {
+          formatted.push({
+            timestamp: cornerTime,
+            time: new Date(cornerTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            fullDate: new Date(cornerTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
+            status: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : 0,
+            onlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : null,
+            offlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? null : 0,
+            statusText: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 'Online' : 'Offline',
+            cpu_usage: prevCpu,
+            ram_usage: prevRam,
+          });
+        }
+      }
+    }
+
+    formatted.push({
+      timestamp: currentTime,
+      time: new Date(currentTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      fullDate: new Date(currentTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
+      status: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 1 : 0,
+      onlineStatus: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 1 : null,
+      offlineStatus: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? null : 0,
+      statusText: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 'Online' : 'Offline',
+      cpu_usage: currentCpu,
+      ram_usage: currentRam,
+    });
+  }
+
+  return formatted;
+};
+
+const formatHistoryTick = (unixTime, hours) => {
+  const date = new Date(unixTime);
+  if (hours >= 168) {
+    return date.toLocaleDateString([], { month: 'short', day: '2-digit' });
+  }
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+function ServerCard({ server, onDelete }) {
+  const [history, setHistory] = useState([]);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const endTime = new Date().getTime();
+  const startTime = endTime - 3600000;
+  const apiBase = getApiBase();
+  const { authFetch } = useAuth();
+  const telemetry = server.telemetry || {};
+  const monitorType = (server.monitor_type || 'http').toLowerCase();
+  const isUp = Boolean(server.is_active);
+  const checkedAt = server.last_checked_at
+    ? Math.max(0, Math.round((Date.now() - new Date(server.last_checked_at).getTime()) / 1000))
+    : null;
+
+  const badgeText =
+    monitorType === 'push'
+      ? isUp
+        ? `Heartbeat (${checkedAt ?? 0}s ago)`
+        : 'Missed Heartbeat'
+      : monitorType === 'dns'
+      ? isUp
+        ? `Resolved (${telemetry.resolved_value || 'A'})`
+        : 'NXDOMAIN'
+      : monitorType === 'ping'
+      ? isUp
+        ? `Ping ${telemetry.latency_ms ?? '-'} ms`
+        : '100% Packet Loss'
+      : monitorType === 'tcp'
+      ? isUp
+        ? `Port ${server.port || '-'} Open`
+        : `Port ${server.port || '-'} Closed`
+      : monitorType === 'smtp'
+      ? isUp
+        ? `Mail Gateway Active (:${server.port || 587})`
+        : 'SMTP Unreachable'
+      : monitorType === 'ssh'
+      ? isUp
+        ? 'SSH Port 22 Open'
+        : 'SSH Refused'
+      : isUp
+      ? `${telemetry.status_code || server.expected_status_code || 200} OK`
+      : `${telemetry.status_code || 'Connection'} Error`;
+
+  const latency =
+    monitorType === 'push'
+      ? `Interval: ${server.heartbeat_interval_seconds || '-'}s`
+      : `${telemetry.response_time_ms ?? telemetry.handshake_time_ms ?? telemetry.latency_ms ?? '-'} ms`;
+
+  useEffect(() => {
+    authFetch(`${apiBase}/servers/${server.server_id}/history`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setHistory(formatHistoryData(data, startTime));
+        }
+      })
+      .catch((err) => console.error(err));
+  }, [server.server_id, server.is_active, apiBase]);
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 font-sans text-base text-white">
-      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-8 space-y-6">
-        <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 text-2xl mb-2">
-            ⚡
+    <Card className="hover:border-neutral-400 dark:hover:border-neutral-600 transition-all flex flex-col justify-between shadow-sm">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono uppercase text-[10px] tracking-wider">
+                {monitorType}
+              </Badge>
+              <span className="flex items-center gap-1.5 text-xs font-semibold">
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    isUp ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
+                  }`}
+                />
+                <span className={isUp ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                  {isUp ? 'Operational' : 'Outage'}
+                </span>
+              </span>
+            </div>
+            <CardTitle className="text-base font-bold truncate">
+              {server.hostname}
+            </CardTitle>
+            <CardDescription className="text-xs truncate font-mono">
+              {server.target_address || 'push'}
+            </CardDescription>
           </div>
-          <h1 className="text-3xl font-bold tracking-tight text-white">PulseWatch</h1>
-          <p className="text-sm text-slate-400">Multi-Tenant Infrastructure Monitoring</p>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(server.server_id);
+            }}
+            className="text-neutral-400 hover:text-red-600 h-8 w-8"
+            title="Delete monitor"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4 flex-grow">
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-neutral-500 dark:text-neutral-400 font-medium">Uptime History</span>
+            <span className="font-mono text-[11px] text-neutral-400">{latency}</span>
+          </div>
+          <HeartbeatStrip history={history} totalBars={32} />
         </div>
 
-        {!require2fa && (
-          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
-            <button
-              type="button"
-              onClick={() => { setIsRegister(false); setError(''); }}
-              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
-                !isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
-              }`}
+        <div className="grid grid-cols-2 gap-2 text-xs pt-2 border-t border-neutral-100 dark:border-neutral-900">
+          <div className="rounded-md bg-neutral-50 dark:bg-neutral-900/60 p-2">
+            <span className="text-neutral-400 block text-[10px] uppercase font-mono">Telemetry</span>
+            <span className="font-semibold text-neutral-800 dark:text-neutral-200 truncate block mt-0.5">
+              {badgeText}
+            </span>
+          </div>
+          <div className="rounded-md bg-neutral-50 dark:bg-neutral-900/60 p-2">
+            <span className="text-neutral-400 block text-[10px] uppercase font-mono">Role</span>
+            <span className="font-semibold text-neutral-800 dark:text-neutral-200 truncate block mt-0.5">
+              {server.server_role || 'Standard'}
+            </span>
+          </div>
+        </div>
+
+        {server.ssl_days_remaining !== null && server.ssl_days_remaining !== undefined && (
+          <div className="flex items-center justify-between rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-xs">
+            <span className="flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400">
+              <Lock className="h-3 w-3 text-neutral-400" />
+              <span>TLS Certificate</span>
+            </span>
+            <Badge
+              variant={
+                server.ssl_days_remaining <= 7
+                  ? 'destructive'
+                  : server.ssl_days_remaining <= 30
+                  ? 'warning'
+                  : 'success'
+              }
+              className="font-mono text-[11px]"
             >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => { setIsRegister(true); setError(''); }}
-              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
-                isRegister ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Register
-            </button>
+              {server.ssl_days_remaining}d remaining
+            </Badge>
           </div>
         )}
+      </CardContent>
 
-        {error && (
-          <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-4 py-3 rounded-xl text-sm flex items-center space-x-2">
-            <span>⚠️</span>
-            <span className="flex-1">{error}</span>
+      <CardFooter className="pt-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setDetailsOpen(true)}
+          className="w-full text-xs font-semibold"
+        >
+          <Eye className="h-3.5 w-3.5 mr-1.5" />
+          Inspect Telemetry
+        </Button>
+      </CardFooter>
+
+      {detailsOpen && (
+        <MonitorDetailsModal
+          server={server}
+          history={history}
+          authFetch={authFetch}
+          apiBase={apiBase}
+          onClose={() => setDetailsOpen(false)}
+        />
+      )}
+    </Card>
+  );
+}
+
+function MonitorDetailsModal({ server, history, authFetch, apiBase, onClose }) {
+  const [detailHistory, setDetailHistory] = useState(history);
+  const [timeRange, setTimeRange] = useState('24h');
+  const type = (server.monitor_type || 'http').toLowerCase();
+
+  useEffect(() => {
+    authFetch(`${apiBase}/servers/${server.server_id}/history?time_range=${timeRange}`)
+      .then((res) => res.json())
+      .then(
+        (data) =>
+          Array.isArray(data) &&
+          setDetailHistory(
+            data.map((point) => ({
+              ...point,
+              timestamp: new Date(point.timestamp).getTime(),
+              fullDate: new Date(point.timestamp).toLocaleString(),
+            }))
+          )
+      );
+  }, [server.server_id, apiBase, timeRange]);
+
+  const chartData = detailHistory
+    .map((point) => ({
+      ...point,
+      latency:
+        point.telemetry?.response_time_ms ??
+        point.telemetry?.handshake_time_ms ??
+        point.telemetry?.latency_ms ??
+        null,
+      activity: point.status ? 1 : 0,
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const formatDetailXAxisTick = (value) => {
+    const date = new Date(value);
+    if (timeRange === '24h') {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: '2-digit' });
+  };
+
+  const latest = chartData[chartData.length - 1];
+  const metrics =
+    type === 'push'
+      ? [
+          ['Heartbeat Interval', `${server.heartbeat_interval_seconds || '-'}s`],
+          ['Last Received', server.last_heartbeat_at ? new Date(server.last_heartbeat_at).toLocaleTimeString() : 'Never'],
+          ['Health State', latest?.status ? 'Operational' : 'Overdue'],
+        ]
+      : [
+          ['Target Destination', server.target_address || 'N/A'],
+          ['Listening Port', server.port || 'Standard'],
+          ['Latest Latency', latest?.latency != null ? `${latest.latency} ms` : 'Unavailable'],
+          ...(server.ssl_days_remaining != null ? [['SSL Expiration', `${server.ssl_days_remaining} days remaining`]] : []),
+        ];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="relative w-full max-w-4xl rounded-2xl border border-neutral-200 bg-white text-neutral-950 shadow-2xl dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 overflow-hidden my-8">
+        <div className="flex items-center justify-between border-b border-neutral-200 px-6 py-4 dark:border-neutral-800">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Badge variant="outline" className="font-mono uppercase text-[10px]">
+                {type}
+              </Badge>
+              <Badge variant={server.is_active ? 'success' : 'destructive'}>
+                {server.is_active ? 'Online' : 'Offline'}
+              </Badge>
+            </div>
+            <h2 className="text-xl font-bold tracking-tight">{server.hostname}</h2>
           </div>
-        )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
-        {require2fa ? (
-          <form onSubmit={handleVerify2fa} className="space-y-5">
-            <div className="bg-blue-950/40 border border-blue-800/60 rounded-xl p-4 text-center space-y-2">
-              <span className="text-2xl">🛡️</span>
-              <h2 className="text-base font-bold text-blue-400">Two-Factor Authentication</h2>
-              <p className="text-xs text-slate-300">
-                A 6-digit verification code has been dispatched to <strong className="text-white">{twoFaEmail}</strong>.
-              </p>
-              <p className="text-xs text-slate-500 font-mono">
-                [Mock Mode] Check server console logs for the code.
-              </p>
+        <div className="p-6 space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {metrics.map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 dark:border-neutral-800 dark:bg-neutral-900/60"
+              >
+                <span className="text-[10px] uppercase font-mono font-medium tracking-wider text-neutral-500 dark:text-neutral-400">
+                  {label}
+                </span>
+                <span className="mt-1 block text-sm font-bold text-neutral-950 dark:text-neutral-50 truncate">
+                  {value}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                Latency & Heartbeat Waveform
+              </h3>
+              <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-800 dark:bg-neutral-900">
+                {['24h', '7d', '30d'].map((range) => (
+                  <button
+                    key={range}
+                    type="button"
+                    onClick={() => setTimeRange(range)}
+                    className={`px-3 py-1 text-xs font-bold uppercase rounded-md transition-all ${
+                      timeRange === range
+                        ? 'bg-white text-neutral-950 dark:bg-neutral-950 dark:text-neutral-50 shadow-sm'
+                        : 'text-neutral-500 hover:text-neutral-950 dark:hover:text-neutral-50'
+                    }`}
+                  >
+                    {range}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 text-center">
-                Enter 6-Digit Code
-              </label>
-              <input
-                type="text"
-                maxLength="6"
-                required
-                autoFocus
-                value={otpCode}
-                onChange={(e) => setOtpCode(e.target.value)}
-                placeholder="123456"
-                className="w-full bg-slate-950 border border-blue-500 text-center tracking-widest font-mono text-2xl py-3 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            <div className="h-72 w-full rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 bg-neutral-50/50 dark:bg-neutral-900/20">
+              <ChartContainer>
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="latencyGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+                  <XAxis
+                    dataKey="timestamp"
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    tickFormatter={formatDetailXAxisTick}
+                    stroke="var(--muted-foreground)"
+                    fontSize={11}
+                    tickMargin={8}
+                  />
+                  <YAxis
+                    stroke="var(--muted-foreground)"
+                    fontSize={11}
+                    width={55}
+                    tickFormatter={(v) => (type === 'push' ? (v ? 'UP' : 'DOWN') : `${v}ms`)}
+                  />
+                  <Tooltip
+                    content={
+                      <ChartTooltipContent
+                        formatter={(val) => [type === 'push' ? (val ? 'OK' : 'MISSED') : `${val} ms`, 'Response Time']}
+                      />
+                    }
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey={type === 'push' ? 'activity' : 'latency'}
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    fill="url(#latencyGradient)"
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ChartContainer>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+              Recent Health Events
+            </h3>
+            <div className="divide-y divide-neutral-200 dark:divide-neutral-800 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
+              {chartData
+                .slice(-6)
+                .reverse()
+                .map((point, index) => (
+                  <div
+                    key={`${point.timestamp}-${index}`}
+                    className="flex items-center justify-between px-4 py-2.5 text-xs bg-neutral-50/50 dark:bg-neutral-900/30"
+                  >
+                    <span className="flex items-center gap-2 font-medium">
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          point.status ? 'bg-emerald-500' : 'bg-rose-500'
+                        }`}
+                      />
+                      <span>{point.status ? 'Operational Check Passed' : 'Health Check Failed'}</span>
+                    </span>
+                    <span className="font-mono text-neutral-400">
+                      {new Date(point.timestamp).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-2 border-t border-neutral-200 dark:border-neutral-800">
+            <Button variant="outline" onClick={onClose}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard() {
+  const [servers, setServers] = useState([]);
+  const [copied, setCopied] = useState(false);
+  const [isMonitorModalOpen, setIsMonitorModalOpen] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [protocolFilter, setProtocolFilter] = useState('all');
+
+  const apiBase = getApiBase();
+  const { user, authFetch } = useAuth();
+  const currentHost =
+    typeof window !== 'undefined' && window.location.hostname
+      ? window.location.hostname
+      : 'localhost';
+  const installCmd = `curl -fsSL http://${currentHost}:8000/install.sh | bash -s http://${currentHost}:8000/agent/metric_agent.py`;
+
+  const fetchServers = () => {
+    authFetch(`${apiBase}/servers`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setServers(data);
+        }
+      })
+      .catch((error) => console.error(error));
+  };
+
+  useEffect(() => {
+    fetchServers();
+
+    let ws = null;
+    let reconnectTimer = null;
+    let isMounted = true;
+
+    const connectWs = () => {
+      if (!isMounted || !user) return;
+      try {
+        const wsUrl = getWsUrl();
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          if (isMounted) setWsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (
+              (data.type === 'SERVERS_UPDATE' || data.type === 'INITIAL_STATE') &&
+              Array.isArray(data.servers)
+            ) {
+              setServers(data.servers);
+            }
+          } catch (err) {
+            console.error(err);
+          }
+        };
+
+        ws.onclose = () => {
+          if (isMounted) {
+            setWsConnected(false);
+            reconnectTimer = setTimeout(connectWs, 3000);
+          }
+        };
+
+        ws.onerror = () => {
+          if (ws) ws.close();
+        };
+      } catch {
+        if (isMounted) {
+          reconnectTimer = setTimeout(connectWs, 3000);
+        }
+      }
+    };
+
+    connectWs();
+
+    const fallbackInterval = setInterval(() => {
+      fetchServers();
+    }, 15000);
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearInterval(fallbackInterval);
+      if (ws) ws.close();
+    };
+  }, [apiBase, user]);
+
+  const deleteServer = async (serverId) => {
+    setServers((prevServers) =>
+      prevServers.filter((s) => String(s.server_id) !== String(serverId))
+    );
+    try {
+      const response = await authFetch(`${apiBase}/servers/${serverId}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        fetchServers();
+      }
+    } catch (error) {
+      console.error(error);
+      fetchServers();
+    }
+  };
+
+  const handleCopyCommand = () => {
+    navigator.clipboard.writeText(installCmd);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const activeAlerts = useMemo(() => {
+    return servers.filter((s) => !s.is_active);
+  }, [servers]);
+
+  const filteredServers = useMemo(() => {
+    return servers.filter((s) => {
+      const matchesSearch =
+        (s.hostname || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (s.target_address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (s.server_role || '').toLowerCase().includes(searchQuery.toLowerCase());
+      const type = (s.monitor_type || 'http').toLowerCase();
+      const matchesProtocol = protocolFilter === 'all' || type === protocolFilter;
+      return matchesSearch && matchesProtocol;
+    });
+  }, [servers, searchQuery, protocolFilter]);
+
+  const operationalCount = servers.length - activeAlerts.length;
+  const globalUptime = servers.length
+    ? `${((operationalCount / servers.length) * 100).toFixed(1)}%`
+    : '100%';
+
+  return (
+    <div className="space-y-8 max-w-7xl mx-auto">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-5 flex flex-col justify-between">
+            <span className="text-xs uppercase font-mono font-medium text-neutral-500">
+              Monitored Nodes
+            </span>
+            <div className="text-3xl font-extrabold tracking-tight mt-2 font-mono">
+              {servers.length}
+            </div>
+            <span className="text-[11px] text-neutral-400 mt-1">Multi-tenant fleet</span>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-5 flex flex-col justify-between">
+            <span className="text-xs uppercase font-mono font-medium text-emerald-600 dark:text-emerald-400">
+              Operational
+            </span>
+            <div className="text-3xl font-extrabold tracking-tight mt-2 font-mono text-emerald-600 dark:text-emerald-400">
+              {operationalCount}
+            </div>
+            <span className="text-[11px] text-neutral-400 mt-1">All checks passing</span>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-5 flex flex-col justify-between">
+            <span className="text-xs uppercase font-mono font-medium text-rose-600 dark:text-rose-400">
+              Active Incidents
+            </span>
+            <div className="text-3xl font-extrabold tracking-tight mt-2 font-mono text-rose-600 dark:text-rose-400">
+              {activeAlerts.length}
+            </div>
+            <span className="text-[11px] text-neutral-400 mt-1">Outages detected</span>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-5 flex flex-col justify-between">
+            <span className="text-xs uppercase font-mono font-medium text-neutral-500">
+              Cluster Availability
+            </span>
+            <div className="text-3xl font-extrabold tracking-tight mt-2 font-mono">
+              {globalUptime}
+            </div>
+            <span className="text-[11px] text-neutral-400 mt-1">Real-time availability</span>
+          </CardContent>
+        </Card>
+      </div>
+
+      {activeAlerts.length > 0 && (
+        <Card className="border-rose-500/30 bg-rose-500/5">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+              <AlertTriangle className="h-5 w-5 animate-bounce" />
+              <CardTitle className="text-base font-bold">Active Outage Incidents</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {activeAlerts.map((server) => (
+              <div
+                key={server.server_id}
+                className="flex items-center justify-between rounded-lg border border-rose-500/20 bg-white dark:bg-neutral-900 p-3 text-xs"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping" />
+                  <span className="font-bold">{server.hostname}</span>
+                  <span className="text-neutral-400 font-mono">({server.target_address})</span>
+                </div>
+                <Badge variant="destructive">
+                  {server.telemetry?.error || 'Target Unreachable'}
+                </Badge>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-1 flex flex-col justify-between">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Plus className="h-5 w-5 text-neutral-900 dark:text-neutral-100" />
+              <CardTitle className="text-base font-bold">Add Monitor</CardTitle>
+            </div>
+            <CardDescription className="text-xs">
+              Provision automated HTTP, TCP, DNS, SSH, SMTP, PING or Push monitors with SSL tracking.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <Button
+              onClick={() => setIsMonitorModalOpen(true)}
+              className="w-full font-bold shadow-sm"
+            >
+              <Plus className="h-4 w-4 mr-1.5" />
+              Create Monitor
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Terminal className="h-5 w-5 text-emerald-500" />
+                <CardTitle className="text-base font-bold">One-Click Agent Daemon</CardTitle>
+              </div>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                PORT: 8001
+              </Badge>
+            </div>
+            <CardDescription className="text-xs">
+              Deploy the lightweight metric daemon on target machines to monitor CPU & RAM in real time.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="relative rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-950 p-3.5 font-mono text-xs text-emerald-400 overflow-x-auto flex items-center justify-between gap-4">
+              <code className="truncate">{installCmd}</code>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyCommand}
+                className="shrink-0 h-7 text-xs bg-neutral-900 hover:bg-neutral-800 text-white border-neutral-700"
+              >
+                {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                <span className="ml-1.5">{copied ? 'Copied' : 'Copy'}</span>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-bold tracking-tight">Monitors Fleet</h2>
+            <Badge variant="outline" className="font-mono text-xs">
+              {filteredServers.length} / {servers.length}
+            </Badge>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:w-60">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-neutral-400 pointer-events-none" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search hostname or IP..."
+                className="pl-9 h-9 text-xs"
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition-colors shadow-lg shadow-blue-600/30"
+            <select
+              value={protocolFilter}
+              onChange={(e) => setProtocolFilter(e.target.value)}
+              className="h-9 rounded-md border border-neutral-200 bg-transparent px-3 py-1 text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-950 dark:border-neutral-800 dark:focus-visible:ring-neutral-300"
             >
-              {loading ? 'Verifying 2FA...' : 'Verify & Sign In'}
-            </button>
+              <option value="all">All Protocols</option>
+              <option value="http">HTTP(S)</option>
+              <option value="tcp">TCP</option>
+              <option value="dns">DNS</option>
+              <option value="ping">PING</option>
+              <option value="ssh">SSH</option>
+              <option value="smtp">SMTP</option>
+              <option value="push">PUSH</option>
+            </select>
+          </div>
+        </div>
 
-            <button
-              type="button"
-              onClick={resetToLogin}
-              className="w-full text-xs text-slate-400 hover:text-slate-200 text-center block pt-2 transition-colors"
-            >
-              ← Back to Sign In
-            </button>
-          </form>
+        {filteredServers.length === 0 ? (
+          <Card className="border-dashed p-12 text-center space-y-3">
+            <Server className="h-8 w-8 mx-auto text-neutral-400" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold">No monitors match your criteria</p>
+              <p className="text-xs text-neutral-500">
+                Create your first monitor or adjust your search filter above.
+              </p>
+            </div>
+            <Button size="sm" onClick={() => setIsMonitorModalOpen(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              Add Monitor
+            </Button>
+          </Card>
         ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Username</label>
-              <input
-                type="text"
-                required
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. admin or devops"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+            {filteredServers.map((server) => (
+              <ServerCard
+                key={server.server_id}
+                server={server}
+                onDelete={deleteServer}
               />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Password</label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition-colors shadow-lg shadow-blue-600/30"
-            >
-              {loading ? 'Authenticating...' : isRegister ? 'Create Tenant Account' : 'Sign In to Dashboard'}
-            </button>
-          </form>
+            ))}
+          </div>
         )}
+      </div>
 
-        <div className="pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
-        </div>
+      {isMonitorModalOpen && (
+        <AddMonitorModal
+          apiBase={apiBase}
+          authFetch={authFetch}
+          onClose={() => setIsMonitorModalOpen(false)}
+          onCreated={() => fetchServers()}
+        />
+      )}
+    </div>
+  );
+}
+
+function Analytics() {
+  const [servers, setServers] = useState([]);
+  const [selectedServer, setSelectedServer] = useState('');
+  const [matrix, setMatrix] = useState({ '24h': '0.00', '7d': '0.00', '14d': '0.00', '30d': '0.00' });
+  const [graphHours, setGraphHours] = useState(24);
+  const [graphData, setGraphData] = useState([]);
+  const [isCpuOpen, setIsCpuOpen] = useState(true);
+  const [isRamOpen, setIsRamOpen] = useState(true);
+
+  const apiBase = getApiBase();
+  const { authFetch } = useAuth();
+  const endTime = new Date().getTime();
+  const startTime = endTime - graphHours * 3600000;
+
+  useEffect(() => {
+    authFetch(`${apiBase}/servers`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setServers(data);
+          if (data.length > 0 && !selectedServer) {
+            setSelectedServer(data[0].server_id);
+          }
+        }
+      })
+      .catch((err) => console.error(err));
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (!selectedServer) return;
+    authFetch(`${apiBase}/servers/${selectedServer}/uptime`)
+      .then((res) => res.json())
+      .then((data) => setMatrix(data))
+      .catch((err) => console.error(err));
+  }, [selectedServer, apiBase]);
+
+  useEffect(() => {
+    if (!selectedServer) return;
+    authFetch(`${apiBase}/servers/${selectedServer}/history?hours=${graphHours}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setGraphData(formatHistoryData(data, startTime));
+        }
+      })
+      .catch((err) => console.error(err));
+  }, [selectedServer, graphHours, apiBase]);
+
+  const latestMetrics = useMemo(() => {
+    if (!graphData || graphData.length === 0) return { cpu: null, ram: null };
+    for (let i = graphData.length - 1; i >= 0; i--) {
+      if (graphData[i].cpu_usage !== null || graphData[i].ram_usage !== null) {
+        return {
+          cpu: graphData[i].cpu_usage,
+          ram: graphData[i].ram_usage,
+        };
+      }
+    }
+    return { cpu: null, ram: null };
+  }, [graphData]);
+
+  return (
+    <div className="space-y-8 max-w-7xl mx-auto">
+      <Card>
+        <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <span className="text-xs uppercase font-mono font-medium text-neutral-500">
+              Active Telemetry Node
+            </span>
+            <h3 className="text-sm font-bold">Select Target Monitor</h3>
+          </div>
+          <select
+            value={selectedServer}
+            onChange={(e) => setSelectedServer(e.target.value)}
+            className="h-9 w-full sm:w-80 rounded-md border border-neutral-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-950 dark:border-neutral-800 dark:focus-visible:ring-neutral-300"
+          >
+            {servers.map((s) => (
+              <option key={s.server_id} value={s.server_id}>
+                {s.hostname} ({s.target_address})
+              </option>
+            ))}
+          </select>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {Object.entries(matrix).map(([timeframe, percentage]) => {
+          const num = parseFloat(percentage);
+          const isOptimal = num >= 99;
+          const isWarning = num >= 95 && num < 99;
+          return (
+            <Card key={timeframe}>
+              <CardContent className="p-5 flex flex-col items-center text-center">
+                <span className="text-xs uppercase font-mono font-medium text-neutral-500">
+                  {timeframe} Availability
+                </span>
+                <span
+                  className={`text-3xl font-extrabold tracking-tight mt-2 font-mono ${
+                    isOptimal
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : isWarning
+                      ? 'text-amber-500'
+                      : 'text-rose-600 dark:text-rose-400'
+                  }`}
+                >
+                  {percentage}%
+                </span>
+                <Badge
+                  variant={isOptimal ? 'success' : isWarning ? 'warning' : 'destructive'}
+                  className="mt-2 text-[10px]"
+                >
+                  {isOptimal ? 'SLA Met' : isWarning ? 'Degraded' : 'Critical Outage'}
+                </Badge>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <CardTitle className="text-base font-bold">Historical Uptime Timeline</CardTitle>
+              <CardDescription className="text-xs">
+                State transition history across selected time boundary.
+              </CardDescription>
+            </div>
+            <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-800 dark:bg-neutral-900">
+              {[
+                { label: '1H', value: 1 },
+                { label: '24H', value: 24 },
+                { label: '7D', value: 168 },
+              ].map((btn) => (
+                <button
+                  key={btn.label}
+                  onClick={() => setGraphHours(btn.value)}
+                  className={`px-3 py-1 text-xs font-bold uppercase rounded-md transition-all ${
+                    graphHours === btn.value
+                      ? 'bg-white text-neutral-950 dark:bg-neutral-950 dark:text-neutral-50 shadow-sm'
+                      : 'text-neutral-500 hover:text-neutral-950 dark:hover:text-neutral-50'
+                  }`}
+                >
+                  {btn.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="h-64 w-full">
+            <ChartContainer>
+              <LineChart data={graphData} margin={{ top: 10, right: 10, left: -20, bottom: 8 }}>
+                <XAxis
+                  dataKey="timestamp"
+                  type="number"
+                  domain={[startTime, endTime]}
+                  tickFormatter={(t) => formatHistoryTick(t, graphHours)}
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  tickMargin={8}
+                />
+                <YAxis domain={[0, 1]} hide={true} />
+                <Tooltip
+                  content={
+                    <ChartTooltipContent
+                      formatter={(val, name, item) => [item.payload.statusText, 'State']}
+                    />
+                  }
+                />
+                <Line
+                  type="stepAfter"
+                  dataKey="onlineStatus"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+                <Line
+                  type="stepAfter"
+                  dataKey="offlineStatus"
+                  stroke="#ef4444"
+                  strokeWidth={2}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+                <Brush
+                  dataKey="timestamp"
+                  height={22}
+                  stroke="var(--border)"
+                  fill="var(--background)"
+                  travellerWidth={10}
+                  tickFormatter={(t) => formatHistoryTick(t, graphHours)}
+                />
+              </LineChart>
+            </ChartContainer>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Cpu className="h-4 w-4 text-neutral-900 dark:text-neutral-100" />
+                <CardTitle className="text-sm font-bold">CPU Load Dynamics</CardTitle>
+                {latestMetrics.cpu !== null && (
+                  <Badge variant="outline" className="font-mono text-[10px]">
+                    {latestMetrics.cpu.toFixed(1)}% Current
+                  </Badge>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsCpuOpen(!isCpuOpen)}
+                className="text-xs h-7"
+              >
+                {isCpuOpen ? 'Collapse' : 'Expand'}
+              </Button>
+            </div>
+          </CardHeader>
+          {isCpuOpen && (
+            <CardContent>
+              <div className="h-60 w-full">
+                <ChartContainer>
+                  <AreaChart data={graphData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="cpuArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#18181b" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#18181b" stopOpacity={0.0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+                    <XAxis
+                      dataKey="timestamp"
+                      type="number"
+                      domain={[startTime, endTime]}
+                      tickFormatter={(t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      stroke="var(--muted-foreground)"
+                      fontSize={11}
+                    />
+                    <YAxis
+                      domain={[0, 100]}
+                      stroke="var(--muted-foreground)"
+                      fontSize={11}
+                      tickFormatter={(v) => `${v}%`}
+                      width={45}
+                    />
+                    <Tooltip
+                      content={
+                        <ChartTooltipContent
+                          formatter={(v) => [v != null ? `${Number(v).toFixed(1)}%` : 'N/A', 'CPU Utilization']}
+                        />
+                      }
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="cpu_usage"
+                      stroke="var(--foreground)"
+                      strokeWidth={2}
+                      fill="url(#cpuArea)"
+                      connectNulls={true}
+                      isAnimationActive={false}
+                    />
+                  </AreaChart>
+                </ChartContainer>
+              </div>
+            </CardContent>
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <HardDrive className="h-4 w-4 text-neutral-900 dark:text-neutral-100" />
+                <CardTitle className="text-sm font-bold">RAM Memory Allocation</CardTitle>
+                {latestMetrics.ram !== null && (
+                  <Badge variant="outline" className="font-mono text-[10px]">
+                    {latestMetrics.ram.toFixed(1)}% Current
+                  </Badge>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsRamOpen(!isRamOpen)}
+                className="text-xs h-7"
+              >
+                {isRamOpen ? 'Collapse' : 'Expand'}
+              </Button>
+            </div>
+          </CardHeader>
+          {isRamOpen && (
+            <CardContent>
+              <div className="h-60 w-full">
+                <ChartContainer>
+                  <AreaChart data={graphData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="ramArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#18181b" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#18181b" stopOpacity={0.0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+                    <XAxis
+                      dataKey="timestamp"
+                      type="number"
+                      domain={[startTime, endTime]}
+                      tickFormatter={(t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      stroke="var(--muted-foreground)"
+                      fontSize={11}
+                    />
+                    <YAxis
+                      domain={[0, 100]}
+                      stroke="var(--muted-foreground)"
+                      fontSize={11}
+                      tickFormatter={(v) => `${v}%`}
+                      width={45}
+                    />
+                    <Tooltip
+                      content={
+                        <ChartTooltipContent
+                          formatter={(v) => [v != null ? `${Number(v).toFixed(1)}%` : 'N/A', 'Memory Load']}
+                        />
+                      }
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="ram_usage"
+                      stroke="var(--foreground)"
+                      strokeWidth={2}
+                      fill="url(#ramArea)"
+                      connectNulls={true}
+                      isAnimationActive={false}
+                    />
+                  </AreaChart>
+                </ChartContainer>
+              </div>
+            </CardContent>
+          )}
+        </Card>
       </div>
     </div>
   );
@@ -391,6 +1657,7 @@ function Settings() {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [passwordError, setPasswordError] = useState('');
+
   const [channels, setChannels] = useState([]);
   const [channelType, setChannelType] = useState('webhook');
   const [destinationUrl, setDestinationUrl] = useState('');
@@ -404,37 +1671,37 @@ function Settings() {
 
   const fetchProfile = () => {
     authFetch(`${apiBase}/users/me`)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         if (data) {
           if (data.email) setEmail(data.email);
           setIs2faEnabled(Boolean(data.is_2fa_enabled));
         }
       })
-      .catch(err => console.error(err));
+      .catch((err) => console.error(err));
   };
 
   const fetchChannels = () => {
     authFetch(`${apiBase}/notification-channels`)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         if (Array.isArray(data)) setChannels(data);
       })
-      .catch(err => console.error(err));
+      .catch((err) => console.error(err));
   };
 
   const fetchMonitors = () => {
     authFetch(`${apiBase}/servers`)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         if (Array.isArray(data)) setMonitors(data);
       })
-      .catch(err => console.error(err));
+      .catch((err) => console.error(err));
   };
 
   const monitorLabel = (serverId) => {
     if (serverId === null || serverId === undefined) return 'All Monitors (Global)';
-    const match = monitors.find(m => String(m.server_id) === String(serverId));
+    const match = monitors.find((m) => String(m.server_id) === String(serverId));
     return match ? match.hostname : `Monitor #${serverId}`;
   };
 
@@ -443,9 +1710,9 @@ function Settings() {
     fetchChannels();
     fetchMonitors();
     authFetch(`${apiBase}/system/retention-stats`)
-      .then(res => res.json())
-      .then(data => setRetentionStats(data))
-      .catch(err => console.error(err));
+      .then((res) => res.json())
+      .then((data) => setRetentionStats(data))
+      .catch((err) => console.error(err));
   }, [apiBase]);
 
   const handleUpdateEmail = async (e) => {
@@ -458,7 +1725,7 @@ function Settings() {
       const res = await authFetch(`${apiBase}/users/email`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, current_password: emailCurrentPassword, otp_code: emailOtp })
+        body: JSON.stringify({ email, current_password: emailCurrentPassword, otp_code: emailOtp }),
       });
 
       const data = await res.json();
@@ -487,8 +1754,8 @@ function Settings() {
         body: JSON.stringify({
           is_2fa_enabled: !is2faEnabled,
           current_password: twoFaCurrentPassword,
-          otp_code: twoFaOtp
-        })
+          otp_code: twoFaOtp,
+        }),
       });
 
       const data = await res.json();
@@ -513,7 +1780,7 @@ function Settings() {
       const res = await authFetch(`${apiBase}/users/request-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'update_settings' })
+        body: JSON.stringify({ action: 'update_settings' }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Failed to send verification code');
@@ -533,7 +1800,7 @@ function Settings() {
       const res = await authFetch(`${apiBase}/users/request-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'update_settings' })
+        body: JSON.stringify({ action: 'update_settings' }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -556,7 +1823,7 @@ function Settings() {
       const res = await authFetch(`${apiBase}/users/request-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'update_settings' })
+        body: JSON.stringify({ action: 'update_settings' }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -594,8 +1861,8 @@ function Settings() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: newUsername.trim(),
-          otp_code: usernameOtp
-        })
+          otp_code: usernameOtp,
+        }),
       });
 
       const data = await res.json();
@@ -626,7 +1893,12 @@ function Settings() {
       return;
     }
 
-    if (newPassword.length < 8 || newPassword.length > 64 || !/\d/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+    if (
+      newPassword.length < 8 ||
+      newPassword.length > 64 ||
+      !/\d/.test(newPassword) ||
+      !/[^A-Za-z0-9]/.test(newPassword)
+    ) {
       setPasswordError('New password must be 8-64 characters and include a number and special character');
       return;
     }
@@ -645,8 +1917,8 @@ function Settings() {
         body: JSON.stringify({
           current_password: currentPassword,
           new_password: newPassword,
-          otp_code: passwordOtp
-        })
+          otp_code: passwordOtp,
+        }),
       });
 
       const data = await res.json();
@@ -681,8 +1953,8 @@ function Settings() {
           channel_type: channelType,
           destination_url: destinationUrl.trim(),
           server_id: targetServerId === '' ? null : Number(targetServerId),
-          is_active: 1
-        })
+          is_active: 1,
+        }),
       });
 
       const data = await res.json();
@@ -705,7 +1977,7 @@ function Settings() {
       const res = await authFetch(`${apiBase}/notification-channels/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_active: currentStatus ? 0 : 1 })
+        body: JSON.stringify({ is_active: currentStatus ? 0 : 1 }),
       });
       if (res.ok) {
         fetchChannels();
@@ -718,7 +1990,7 @@ function Settings() {
   const handleDeleteChannel = async (id) => {
     try {
       const res = await authFetch(`${apiBase}/notification-channels/${id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
       });
       if (res.ok) {
         setChannelSuccess('Notification channel removed');
@@ -735,7 +2007,7 @@ function Settings() {
     setChannelError('');
     try {
       const res = await authFetch(`${apiBase}/notification-channels/${id}/test`, {
-        method: 'POST'
+        method: 'POST',
       });
       const data = await res.json();
       if (res.ok) {
@@ -751,469 +2023,380 @@ function Settings() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <div className="flex items-center space-x-3 mb-6">
-          <span className="text-2xl">🛡️</span>
-          <div>
-            <h2 className="text-xl font-semibold text-slate-200">Account Security & Authentication Settings</h2>
-            <p className="text-sm text-slate-400">Configure your recovery email, optional 2FA login verification, and profile security credentials.</p>
+    <div className="space-y-8 max-w-5xl mx-auto">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <Shield className="h-5 w-5 text-neutral-900 dark:text-neutral-100" />
+            <div>
+              <CardTitle className="text-base font-bold">Account Security & Credentials</CardTitle>
+              <CardDescription className="text-xs">
+                Manage your notification email, multi-factor authentication, and profile credentials.
+              </CardDescription>
+            </div>
           </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70 flex flex-col justify-between">
-            <form onSubmit={handleUpdateEmail} className="space-y-4">
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-5 space-y-4 bg-neutral-50/50 dark:bg-neutral-900/30">
               <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-emerald-400">Security Email Address</h3>
-                <span className="text-xs text-slate-500 font-mono">OTP Receiver</span>
+                <span className="text-sm font-bold">Primary Notification Email</span>
+                <Badge variant="outline" className="font-mono text-[10px]">OTP Target</Badge>
               </div>
 
-              {emailSuccess && (
-                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs">
-                  {emailSuccess}
-                </div>
-              )}
-              {emailError && (
-                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
-                  {emailError}
-                </div>
-              )}
+              {emailSuccess && <p className="text-xs text-emerald-600 font-medium">{emailSuccess}</p>}
+              {emailError && <p className="text-xs text-rose-600 font-medium">{emailError}</p>}
 
-              <div>
-                <input
+              <form onSubmit={handleUpdateEmail} className="space-y-3">
+                <Input
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="e.g. devops@company.com"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500 text-sm"
+                  placeholder="devops@company.com"
                 />
-              </div>
-
-              <input
-                type="password"
-                required
-                value={emailCurrentPassword}
-                onChange={(e) => setEmailCurrentPassword(e.target.value)}
-                placeholder="Current password"
-                autoComplete="current-password"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500 text-sm"
-              />
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
+                <Input
+                  type="password"
                   required
-                  value={emailOtp}
-                  onChange={(e) => setEmailOtp(e.target.value)}
-                  placeholder="6-digit verification code"
-                  inputMode="numeric"
-                  className="min-w-0 flex-1 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500 text-sm"
+                  value={emailCurrentPassword}
+                  onChange={(e) => setEmailCurrentPassword(e.target.value)}
+                  placeholder="Current password"
+                  autoComplete="current-password"
                 />
-                <button
-                  type="button"
-                  disabled={emailOtpLoading}
-                  onClick={() => requestSensitiveChangeOtp(setEmailOtpLoading, setEmailError, setEmailSuccess)}
-                  className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white px-3 rounded-lg text-xs"
-                >
-                  {emailOtpLoading ? 'Sending...' : 'Send Code'}
-                </button>
-              </div>
-
-              <button
-                type="submit"
-                disabled={emailLoading}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm"
-              >
-                {emailLoading ? 'Saving...' : 'Save Email'}
-              </button>
-            </form>
-          </div>
-
-          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70 flex flex-col justify-between">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-purple-400">Two-Factor Authentication</h3>
-                <span className={`text-xs px-2.5 py-1 rounded-full font-semibold border ${
-                  is2faEnabled ? 'bg-purple-950/80 text-purple-300 border-purple-700' : 'bg-slate-800 text-slate-400 border-slate-700'
-                }`}>
-                  {is2faEnabled ? '🟢 2FA Active' : '⚪ Disabled'}
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300">
-                When enabled, sign-ins will require a 6-digit OTP code dispatched to your registered email.
-              </p>
-
-              {twoFaSuccess && (
-                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs">
-                  {twoFaSuccess}
-                </div>
-              )}
-              {twoFaError && (
-                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
-                  {twoFaError}
-                </div>
-              )}
-
-              <input
-                type="password"
-                required
-                value={twoFaCurrentPassword}
-                onChange={(e) => setTwoFaCurrentPassword(e.target.value)}
-                placeholder="Current password"
-                autoComplete="current-password"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-purple-500 text-sm"
-              />
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  required
-                  value={twoFaOtp}
-                  onChange={(e) => setTwoFaOtp(e.target.value)}
-                  placeholder="6-digit verification code"
-                  inputMode="numeric"
-                  className="min-w-0 flex-1 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-purple-500 text-sm"
-                />
-                <button
-                  type="button"
-                  disabled={twoFaOtpLoading}
-                  onClick={() => requestSensitiveChangeOtp(setTwoFaOtpLoading, setTwoFaError, setTwoFaSuccess)}
-                  className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white px-3 rounded-lg text-xs"
-                >
-                  {twoFaOtpLoading ? 'Sending...' : 'Send Code'}
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleToggle2fa}
-              disabled={twoFaLoading}
-              className={`w-full font-bold py-2.5 px-4 rounded-lg transition-colors text-sm mt-4 ${
-                is2faEnabled 
-                  ? 'bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800/80' 
-                  : 'bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30'
-              }`}
-            >
-              {twoFaLoading ? 'Updating 2FA...' : is2faEnabled ? 'Disable 2FA Login' : 'Enable 2FA Login'}
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70 flex flex-col justify-between">
-            <form onSubmit={handleUpdateUsername} className="space-y-4">
-              <h3 className="text-base font-semibold text-blue-400">Change Username</h3>
-              
-              {usernameSuccess && (
-                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs break-words">
-                  {usernameSuccess}
-                </div>
-              )}
-              {usernameError && (
-                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
-                  {usernameError}
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">New Username</label>
-                <input
-                  type="text"
-                  required
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              {!isUsernameOtpSent ? (
-                <button
-                  type="button"
-                  onClick={handleRequestUsernameOtp}
-                  disabled={usernameOtpLoading}
-                  className="w-full bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 font-semibold py-2.5 px-4 rounded-lg transition-colors text-xs flex items-center justify-center space-x-2"
-                >
-                  <span>🔑</span>
-                  <span>{usernameOtpLoading ? 'Sending OTP...' : 'Request Verification Code'}</span>
-                </button>
-              ) : (
-                <div className="space-y-3 pt-2 border-t border-slate-800">
-                  <div className="flex items-center justify-between text-xs">
-                    <label className="text-slate-400 uppercase tracking-wider">6-Digit Verification Code</label>
-                    <button
-                      type="button"
-                      onClick={handleRequestUsernameOtp}
-                      className="text-blue-400 hover:text-blue-300 underline"
-                    >
-                      Resend Code
-                    </button>
-                  </div>
-                  <input
+                <div className="flex gap-2">
+                  <Input
                     type="text"
-                    maxLength="6"
                     required
-                    placeholder="123456"
-                    value={usernameOtp}
-                    onChange={(e) => setUsernameOtp(e.target.value)}
-                    className="w-full bg-slate-950 border border-blue-500/60 text-center tracking-widest font-mono text-lg rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-400"
+                    value={emailOtp}
+                    onChange={(e) => setEmailOtp(e.target.value)}
+                    placeholder="6-digit verification code"
+                    inputMode="numeric"
                   />
-                  <p className="text-xs text-slate-500">Check your email inbox for your 6-digit verification code</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={emailOtpLoading}
+                    onClick={() => requestSensitiveChangeOtp(setEmailOtpLoading, setEmailError, setEmailSuccess)}
+                  >
+                    {emailOtpLoading ? 'Sending...' : 'Send OTP'}
+                  </Button>
                 </div>
-              )}
+                <Button type="submit" disabled={emailLoading} className="w-full">
+                  {emailLoading ? 'Saving...' : 'Update Email'}
+                </Button>
+              </form>
+            </div>
 
-              <button
-                type="submit"
-                disabled={usernameLoading || !isUsernameOtpSent}
-                className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm shadow-md shadow-blue-600/20"
-              >
-                {usernameLoading ? 'Saving...' : 'Update Username'}
-              </button>
-            </form>
-          </div>
-
-          <div className="bg-slate-900/60 p-6 rounded-xl border border-slate-700/70">
-            <form onSubmit={handleUpdatePassword} className="space-y-4">
-              <h3 className="text-base font-semibold text-cyan-400">Change Password</h3>
-
-              {passwordSuccess && (
-                <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-3 py-2 rounded-lg text-xs break-words">
-                  {passwordSuccess}
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-5 space-y-4 bg-neutral-50/50 dark:bg-neutral-900/30 flex flex-col justify-between">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold">Two-Factor Authentication</span>
+                  <Badge variant={is2faEnabled ? 'success' : 'outline'}>
+                    {is2faEnabled ? '2FA Enabled' : 'Disabled'}
+                  </Badge>
                 </div>
-              )}
-              {passwordError && (
-                <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-3 py-2 rounded-lg text-xs">
-                  {passwordError}
-                </div>
-              )}
+                <p className="text-xs text-neutral-500">
+                  Enforces a mandatory 6-digit email OTP challenge on every tenant sign-in.
+                </p>
 
-              <div>
-                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">Current Password</label>
-                <input
+                {twoFaSuccess && <p className="text-xs text-emerald-600 font-medium">{twoFaSuccess}</p>}
+                {twoFaError && <p className="text-xs text-rose-600 font-medium">{twoFaError}</p>}
+
+                <Input
                   type="password"
                   required
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
+                  value={twoFaCurrentPassword}
+                  onChange={(e) => setTwoFaCurrentPassword(e.target.value)}
+                  placeholder="Current password"
+                  autoComplete="current-password"
                 />
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">New Password</label>
-                <input
-                  type="password"
-                  required
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">Confirm New Password</label>
-                <input
-                  type="password"
-                  required
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              {!isPasswordOtpSent ? (
-                <button
-                  type="button"
-                  onClick={handleRequestPasswordOtp}
-                  disabled={passwordOtpLoading}
-                  className="w-full bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 font-semibold py-2.5 px-4 rounded-lg transition-colors text-xs flex items-center justify-center space-x-2"
-                >
-                  <span>🔑</span>
-                  <span>{passwordOtpLoading ? 'Sending OTP...' : 'Request Verification Code'}</span>
-                </button>
-              ) : (
-                <div className="space-y-3 pt-2 border-t border-slate-800">
-                  <div className="flex items-center justify-between text-xs">
-                    <label className="text-slate-400 uppercase tracking-wider">6-Digit Verification Code</label>
-                    <button
-                      type="button"
-                      onClick={handleRequestPasswordOtp}
-                      className="text-cyan-400 hover:text-cyan-300 underline"
-                    >
-                      Resend Code
-                    </button>
-                  </div>
-                  <input
+                <div className="flex gap-2">
+                  <Input
                     type="text"
-                    maxLength="6"
                     required
-                    placeholder="123456"
-                    value={passwordOtp}
-                    onChange={(e) => setPasswordOtp(e.target.value)}
-                    className="w-full bg-slate-950 border border-cyan-500/60 text-center tracking-widest font-mono text-lg rounded-lg p-2.5 text-white focus:outline-none focus:border-cyan-400"
+                    value={twoFaOtp}
+                    onChange={(e) => setTwoFaOtp(e.target.value)}
+                    placeholder="6-digit verification code"
+                    inputMode="numeric"
                   />
-                  <p className="text-xs text-slate-500">Check your email inbox for your 6-digit verification code</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={twoFaOtpLoading}
+                    onClick={() => requestSensitiveChangeOtp(setTwoFaOtpLoading, setTwoFaError, setTwoFaSuccess)}
+                  >
+                    {twoFaOtpLoading ? 'Sending...' : 'Send OTP'}
+                  </Button>
                 </div>
-              )}
+              </div>
 
-              <button
-                type="submit"
-                disabled={passwordLoading || !isPasswordOtpSent}
-                className="w-full bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm shadow-md shadow-cyan-600/20"
+              <Button
+                type="button"
+                variant={is2faEnabled ? 'destructive' : 'default'}
+                disabled={twoFaLoading}
+                onClick={handleToggle2fa}
+                className="w-full mt-4"
               >
-                {passwordLoading ? 'Updating Password...' : 'Update Password'}
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <div className="flex items-center space-x-3 mb-6">
-          <span className="text-2xl">⚡</span>
-          <div>
-            <h2 className="text-xl font-semibold text-slate-200">Alerting & Webhook Dispatcher Channels</h2>
-            <p className="text-sm text-slate-400">Receive real-time state transition alerts (UP ↔ DOWN) across email, webhooks, Discord, Slack, and Telegram.</p>
-          </div>
-        </div>
-
-        {channelSuccess && (
-          <div className="bg-green-950/60 border border-green-800/80 text-green-300 px-4 py-2.5 rounded-lg text-xs mb-6">
-            {channelSuccess}
-          </div>
-        )}
-        {channelError && (
-          <div className="bg-red-950/60 border border-red-800/80 text-red-300 px-4 py-2.5 rounded-lg text-xs mb-6">
-            {channelError}
-          </div>
-        )}
-
-        <form onSubmit={handleCreateChannel} className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/70 mb-6">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">Add Notification Destination</h3>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
-            <div>
-              <label className="block text-xs text-slate-400 mb-1 font-medium">Channel Type</label>
-              <select
-                value={channelType}
-                onChange={(e) => setChannelType(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-blue-500"
-              >
-                <option value="webhook">Custom Webhook (JSON)</option>
-                <option value="discord">Discord Webhook</option>
-                <option value="slack">Slack Incoming Webhook</option>
-                <option value="telegram">Telegram Bot Webhook</option>
-                <option value="email">Email Alert</option>
-              </select>
+                {twoFaLoading
+                  ? 'Updating...'
+                  : is2faEnabled
+                  ? 'Disable Two-Factor Authentication'
+                  : 'Enable Two-Factor Authentication'}
+              </Button>
             </div>
-            <div>
-              <label className="block text-xs text-slate-400 mb-1 font-medium">Target Monitor</label>
-              <select
-                value={targetServerId}
-                onChange={(e) => setTargetServerId(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-blue-500"
-              >
-                <option value="">All Monitors (Global)</option>
-                {monitors.map((m) => (
-                  <option key={m.server_id} value={m.server_id}>{m.hostname}</option>
-                ))}
-              </select>
-            </div>
-            <div className="md:col-span-3">
-              <label className="block text-xs text-slate-400 mb-1 font-medium">Destination URL or Email Address</label>
-              <input
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-neutral-200 dark:border-neutral-800">
+            <form onSubmit={handleUpdateUsername} className="space-y-3">
+              <h3 className="text-sm font-bold">Change Tenant Username</h3>
+              {usernameSuccess && <p className="text-xs text-emerald-600 font-medium">{usernameSuccess}</p>}
+              {usernameError && <p className="text-xs text-rose-600 font-medium">{usernameError}</p>}
+              <Input
                 type="text"
                 required
-                value={destinationUrl}
-                onChange={(e) => setDestinationUrl(e.target.value)}
-                placeholder={channelType === 'email' ? 'devops@company.com' : 'https://discord.com/api/webhooks/... or https://hooks.slack.com/...'}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-blue-500 font-mono"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                placeholder="New username"
               />
-            </div>
-            <div className="flex items-end">
-              <button
-                type="submit"
-                disabled={channelLoading}
-                className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg transition-colors text-sm shadow-md shadow-blue-600/30"
-              >
-                {channelLoading ? 'Adding...' : 'Add Channel'}
-              </button>
+              {!isUsernameOtpSent ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleRequestUsernameOtp}
+                  disabled={usernameOtpLoading}
+                  className="w-full text-xs"
+                >
+                  <Key className="h-3.5 w-3.5 mr-1.5" />
+                  {usernameOtpLoading ? 'Requesting...' : 'Request Username OTP'}
+                </Button>
+              ) : (
+                <div className="space-y-2">
+                  <Input
+                    type="text"
+                    maxLength="6"
+                    required
+                    placeholder="6-digit OTP code"
+                    value={usernameOtp}
+                    onChange={(e) => setUsernameOtp(e.target.value)}
+                  />
+                  <Button type="submit" disabled={usernameLoading} className="w-full">
+                    {usernameLoading ? 'Saving...' : 'Confirm Username Change'}
+                  </Button>
+                </div>
+              )}
+            </form>
+
+            <form onSubmit={handleUpdatePassword} className="space-y-3">
+              <h3 className="text-sm font-bold">Update Account Password</h3>
+              {passwordSuccess && <p className="text-xs text-emerald-600 font-medium">{passwordSuccess}</p>}
+              {passwordError && <p className="text-xs text-rose-600 font-medium">{passwordError}</p>}
+              <Input
+                type="password"
+                required
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="Current password"
+              />
+              <Input
+                type="password"
+                required
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="New password (8+ chars, special char & digit)"
+              />
+              <Input
+                type="password"
+                required
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm new password"
+              />
+              {!isPasswordOtpSent ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleRequestPasswordOtp}
+                  disabled={passwordOtpLoading}
+                  className="w-full text-xs"
+                >
+                  <Key className="h-3.5 w-3.5 mr-1.5" />
+                  {passwordOtpLoading ? 'Requesting...' : 'Request Password OTP'}
+                </Button>
+              ) : (
+                <div className="space-y-2">
+                  <Input
+                    type="text"
+                    maxLength="6"
+                    required
+                    placeholder="6-digit OTP code"
+                    value={passwordOtp}
+                    onChange={(e) => setPasswordOtp(e.target.value)}
+                  />
+                  <Button type="submit" disabled={passwordLoading} className="w-full">
+                    {passwordLoading ? 'Updating...' : 'Confirm Password Update'}
+                  </Button>
+                </div>
+              )}
+            </form>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <Bell className="h-5 w-5 text-neutral-900 dark:text-neutral-100" />
+            <div>
+              <CardTitle className="text-base font-bold">Alerting & Webhook Dispatcher</CardTitle>
+              <CardDescription className="text-xs">
+                Broadcast real-time incident state transitions (UP ↔ DOWN) across external endpoints.
+              </CardDescription>
             </div>
           </div>
-        </form>
-
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold text-slate-300">Configured Notification Destinations ({channels.length})</h3>
-          {channels.length === 0 ? (
-            <div className="bg-slate-900/40 border border-dashed border-slate-700/80 rounded-xl p-8 text-center text-slate-500 text-sm">
-              No alert channels configured. Add your first webhook or email above to start receiving outage alerts.
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {channelSuccess && (
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+              {channelSuccess}
             </div>
-          ) : (
-            <div className="divide-y divide-slate-700/60 border border-slate-700/70 rounded-xl overflow-hidden bg-slate-900/40">
-              {channels.map((ch) => (
-                <div key={ch.id} className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                  <div className="flex items-center space-x-3">
-                    <span className="text-xl">
-                      {ch.channel_type === 'discord' && '🎮'}
-                      {ch.channel_type === 'slack' && '💬'}
-                      {ch.channel_type === 'telegram' && '✈️'}
-                      {ch.channel_type === 'email' && '✉️'}
-                      {ch.channel_type === 'webhook' && '🔗'}
-                    </span>
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs uppercase font-bold px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">
+          )}
+          {channelError && (
+            <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400 font-medium">
+              {channelError}
+            </div>
+          )}
+
+          <form
+            onSubmit={handleCreateChannel}
+            className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 space-y-4 bg-neutral-50/50 dark:bg-neutral-900/30"
+          >
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+                  Channel Protocol
+                </label>
+                <select
+                  value={channelType}
+                  onChange={(e) => setChannelType(e.target.value)}
+                  className="flex h-9 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-950 dark:border-neutral-800 dark:focus-visible:ring-neutral-300"
+                >
+                  <option value="webhook">Custom Webhook (JSON)</option>
+                  <option value="discord">Discord Webhook</option>
+                  <option value="slack">Slack Webhook</option>
+                  <option value="telegram">Telegram Bot</option>
+                  <option value="email">Email Alert</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+                  Scope Target
+                </label>
+                <select
+                  value={targetServerId}
+                  onChange={(e) => setTargetServerId(e.target.value)}
+                  className="flex h-9 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-950 dark:border-neutral-800 dark:focus-visible:ring-neutral-300"
+                >
+                  <option value="">All Monitors (Global)</option>
+                  {monitors.map((m) => (
+                    <option key={m.server_id} value={m.server_id}>
+                      {m.hostname}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+                  Destination URL or Address
+                </label>
+                <Input
+                  type="text"
+                  required
+                  value={destinationUrl}
+                  onChange={(e) => setDestinationUrl(e.target.value)}
+                  placeholder={channelType === 'email' ? 'devops@company.com' : 'https://discord.com/api/webhooks/...'}
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button type="submit" disabled={channelLoading}>
+                <Plus className="h-4 w-4 mr-1.5" />
+                {channelLoading ? 'Adding...' : 'Register Notification Channel'}
+              </Button>
+            </div>
+          </form>
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+              Active Dispatch Endpoints ({channels.length})
+            </h3>
+            {channels.length === 0 ? (
+              <p className="text-xs text-neutral-500 text-center py-6 border border-dashed rounded-xl">
+                No notification channels configured. Add your first webhook or email above.
+              </p>
+            ) : (
+              <div className="divide-y divide-neutral-200 dark:divide-neutral-800 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
+                {channels.map((ch) => (
+                  <div
+                    key={ch.id}
+                    className="p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-neutral-50/30 dark:bg-neutral-900/20"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="font-mono uppercase text-[10px]">
                           {ch.channel_type}
-                        </span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                          ch.is_active ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800' : 'bg-slate-800 text-slate-500 border border-slate-700'
-                        }`}>
+                        </Badge>
+                        <Badge variant={ch.is_active ? 'success' : 'outline'}>
                           {ch.is_active ? 'Active' : 'Muted'}
-                        </span>
-                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-blue-950/60 text-blue-300 border border-blue-900">
+                        </Badge>
+                        <Badge variant="secondary" className="text-[10px]">
                           {monitorLabel(ch.server_id)}
-                        </span>
+                        </Badge>
                       </div>
-                      <div className="text-xs text-slate-400 font-mono mt-1 break-all">
+                      <div className="text-xs font-mono text-neutral-500 truncate max-w-md">
                         {ch.destination_url}
                       </div>
                     </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleTestChannel(ch.id)}
+                        disabled={testingChannelId === ch.id}
+                        className="text-xs h-8"
+                      >
+                        <Send className="h-3 w-3 mr-1" />
+                        {testingChannelId === ch.id ? 'Sending...' : 'Test'}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleToggleChannel(ch.id, ch.is_active)}
+                        className="text-xs h-8"
+                      >
+                        {ch.is_active ? 'Mute' : 'Enable'}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDeleteChannel(ch.id)}
+                        className="h-8 w-8 text-neutral-400 hover:text-red-600"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-center space-x-2 self-end sm:self-center">
-                    <button
-                      type="button"
-                      onClick={() => handleTestChannel(ch.id)}
-                      disabled={testingChannelId === ch.id}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded-lg border border-slate-600 transition-colors"
-                    >
-                      {testingChannelId === ch.id ? 'Sending...' : 'Test Alert'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleChannel(ch.id, ch.is_active)}
-                      className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                        ch.is_active 
-                          ? 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border-amber-800/80' 
-                          : 'bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border-emerald-800/80'
-                      }`}
-                    >
-                      {ch.is_active ? 'Mute' : 'Enable'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteChannel(ch.id)}
-                      className="bg-red-950/60 hover:bg-red-900/80 text-red-300 text-xs px-3 py-1.5 rounded-lg border border-red-800/80 transition-colors"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <RetentionPanel retentionStats={retentionStats} />
     </div>
@@ -1222,885 +2405,42 @@ function Settings() {
 
 function RetentionPanel({ retentionStats }) {
   return (
-    <section className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-      <div className="flex items-center space-x-3 mb-6">
-        <span className="text-2xl">🗄️</span>
-        <div>
-          <h2 className="text-xl font-semibold text-slate-200">Database Retention & Storage Lifecycle</h2>
-          <p className="text-sm text-slate-400 mt-1">Automated 3-tier lifecycle: 30-day raw downsampling, 15-month hourly rollups, and auto-purge.</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          ['Hot Tier (Raw Metrics)', retentionStats ? retentionStats.raw_count.toLocaleString() : '...', 'Full resolution (< 30 days)'],
-          ['Warm Tier (Hourly Rollups)', retentionStats ? retentionStats.hourly_count.toLocaleString() : '...', 'Downsampled (30d - 15m)'],
-          ['Scheduled Rollup', retentionStats ? retentionStats.next_schedule : '02:00 UTC', 'Automated background cron'],
-          ['Max Hard Retention', '15 Months', 'Automatic cold purge'],
-        ].map(([label, value, hint]) => (
-          <div key={label} className="bg-slate-900/70 p-4 rounded-lg border border-slate-700">
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">{label}</span>
-            <div className="text-2xl font-bold text-slate-200">{value}</div>
-            <span className="text-xs text-slate-500 mt-1 block">{hint}</span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-const formatHistoryData = (rawData, requestedStartTime) => {
-  if (!rawData || rawData.length === 0) return [];
-  const reversed = [...rawData].reverse();
-  const formatted = [];
-
-  const firstLogTime = new Date(reversed[0].timestamp).getTime();
-
-  if (requestedStartTime && requestedStartTime < firstLogTime) {
-    let fillTime = requestedStartTime;
-    while (fillTime < firstLogTime - 60000) {
-      formatted.push({
-        timestamp: fillTime,
-        time: new Date(fillTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        fullDate: new Date(fillTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-        status: 1,
-        onlineStatus: 1,
-        offlineStatus: null,
-        statusText: 'Unmonitored',
-        cpu_usage: null,
-        ram_usage: null
-      });
-      fillTime += 60000;
-    }
-  }
-
-  for (let i = 0; i < reversed.length; i++) {
-    const currentLog = reversed[i];
-    const currentTime = new Date(currentLog.timestamp).getTime();
-    const currentStatus = currentLog.status;
-    const currentCpu = currentLog.cpu_usage != null ? currentLog.cpu_usage : null;
-    const currentRam = currentLog.ram_usage != null ? currentLog.ram_usage : null;
-
-    if (i > 0) {
-      const prevLog = reversed[i - 1];
-      const prevTime = new Date(prevLog.timestamp).getTime();
-      const prevStatus = prevLog.status;
-      const prevCpu = prevLog.cpu_usage != null ? prevLog.cpu_usage : null;
-      const prevRam = prevLog.ram_usage != null ? prevLog.ram_usage : null;
-
-      let fillTime = prevTime + 30000;
-      while (fillTime < currentTime - 30000) {
-        formatted.push({
-          timestamp: fillTime,
-          time: new Date(fillTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          fullDate: new Date(fillTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-          status: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : 0,
-          onlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : null,
-          offlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? null : 0,
-          statusText: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 'Online' : 'Offline',
-          cpu_usage: prevCpu,
-          ram_usage: prevRam
-        });
-        fillTime += 30000;
-      }
-
-      if (prevStatus !== currentStatus) {
-        const cornerTime = currentTime - 1000;
-        if (cornerTime > prevTime) {
-          formatted.push({
-            timestamp: cornerTime,
-            time: new Date(cornerTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            fullDate: new Date(cornerTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-            status: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : 0,
-            onlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 1 : null,
-            offlineStatus: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? null : 0,
-            statusText: prevStatus === 1 || prevStatus === '1' || prevStatus === 'Online' ? 'Online' : 'Offline',
-            cpu_usage: prevCpu,
-            ram_usage: prevRam
-          });
-        }
-      }
-    }
-
-    formatted.push({
-      timestamp: currentTime,
-      time: new Date(currentTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      fullDate: new Date(currentTime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' }),
-      status: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 1 : 0,
-      onlineStatus: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 1 : null,
-      offlineStatus: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? null : 0,
-      statusText: currentStatus === 1 || currentStatus === '1' || currentStatus === 'Online' ? 'Online' : 'Offline',
-      cpu_usage: currentCpu,
-      ram_usage: currentRam
-    });
-  }
-  
-  return formatted;
-};
-
-const generateGradientStops = (data, onlineColor) => {
-  if (!data || data.length === 0) return <stop offset="0%" stopColor={onlineColor} />;
-  const stops = [];
-  const minTime = data[0].timestamp;
-  const maxTime = data[data.length - 1].timestamp;
-  const timeRange = maxTime - minTime || 1;
-
-  stops.push(<stop key="start" offset="0%" stopColor={data[0].status === 0 ? '#ef4444' : onlineColor} />);
-
-  for (let i = 1; i < data.length; i++) {
-    const d = data[i];
-    const prev = data[i - 1];
-    const color = d.status === 0 ? '#ef4444' : onlineColor;
-    const prevColor = prev.status === 0 ? '#ef4444' : onlineColor;
-
-    if (prevColor !== color) {
-      const percentage = ((d.timestamp - minTime) / timeRange) * 100;
-      const prevPercentage = ((prev.timestamp - minTime) / timeRange) * 100;
-
-      if (color === '#ef4444') {
-        stops.push(<stop key={`stop-${i}-a`} offset={`${prevPercentage}%`} stopColor={onlineColor} />);
-        stops.push(<stop key={`stop-${i}-b`} offset={`${prevPercentage}%`} stopColor="#ef4444" />);
-      } else {
-        stops.push(<stop key={`stop-${i}-a`} offset={`${percentage}%`} stopColor="#ef4444" />);
-        stops.push(<stop key={`stop-${i}-b`} offset={`${percentage}%`} stopColor={onlineColor} />);
-      }
-    }
-  }
-  return stops;
-};
-
-const formatHistoryTick = (unixTime, hours) => {
-  const date = new Date(unixTime);
-  if (hours >= 168) {
-    return date.toLocaleDateString([], { month: 'short', day: '2-digit' });
-  }
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-};
-
-function ServerCard({ server, onDelete }) {
-  const [history, setHistory] = useState([]);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const endTime = new Date().getTime();
-  const startTime = endTime - 3600000;
-  const apiBase = getApiBase();
-  const { authFetch } = useAuth();
-  const telemetry = server.telemetry || {};
-  const monitorType = (server.monitor_type || 'http').toLowerCase();
-  const success = telemetry.is_success ?? Boolean(server.is_active);
-  const checkedAt = server.last_checked_at ? Math.max(0, Math.round((Date.now() - new Date(server.last_checked_at).getTime()) / 1000)) : null;
-  const badge = monitorType === 'push'
-    ? (success ? `Heartbeat Received (${checkedAt ?? 0}s ago)` : 'Heartbeat Overdue / Missed')
-    : monitorType === 'dns'
-      ? (success ? `Resolved (${telemetry.resolved_value || 'A'})` : 'NXDOMAIN / Resolution Failed')
-      : monitorType === 'ping'
-        ? (success ? `Ping Reached (${telemetry.latency_ms ?? '-'} ms)` : 'Host Unreachable / 100% Loss')
-        : monitorType === 'tcp'
-          ? (success ? `Port ${server.port || '-'} Open` : `Port ${server.port || '-'} Closed / Refused`)
-          : monitorType === 'smtp'
-            ? (success ? `Mail Gateway Active (:${server.port || 587})` : 'SMTP Port Unreachable')
-            : monitorType === 'ssh'
-              ? (success ? 'SSH Port Open (:22)' : 'SSH Connection Refused')
-              : (success ? `${telemetry.status_code || server.expected_status_code || 200} OK` : `${telemetry.status_code || 'Connection'} Error`);
-  const latency = monitorType === 'push' ? `Every ${server.heartbeat_interval_seconds || '-'}s` : `${telemetry.response_time_ms ?? telemetry.handshake_time_ms ?? telemetry.latency_ms ?? '-'} ms`;
-
-  useEffect(() => {
-    authFetch(`${apiBase}/servers/${server.server_id}/history`)
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setHistory(formatHistoryData(data, startTime));
-        }
-      })
-      .catch(err => console.error(err));
-  }, [server.server_id, server.is_active, apiBase]);
-
-  return (
-    <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg transition-all hover:border-slate-500 flex flex-col h-full">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-2xl font-bold text-blue-400 truncate pr-2">{server.hostname}</h2>
-        <div className="flex items-center space-x-3 shrink-0">
-          <span className="text-2xl select-none" title={server.is_active ? 'Online' : 'Offline'}>
-            {server.is_active ? '🟢' : '🔴'}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(server.server_id);
-            }}
-            className="text-xs bg-red-950/60 hover:bg-red-600 border border-red-800/80 hover:border-red-500 text-red-300 hover:text-white px-2.5 py-1 rounded transition-colors"
-            title="Delete Server"
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-      
-      <div className="space-y-2 text-slate-300 mb-4 flex-grow text-xs">
-        <div className="flex items-center justify-between rounded-lg border border-slate-700 px-3 py-2 font-semibold">
-          <span className={success ? 'text-emerald-400' : 'text-red-400'}>{success ? '🟢' : '🔴'} {badge}</span>
-        </div>
-        <div className="flex items-center justify-between text-[11px] text-slate-400"><span>⚡ {latency}</span><span>🕒 {checkedAt === null ? 'Not checked' : `Checked ${checkedAt}s ago`}</span></div>
-        <div className="flex gap-1" aria-label="Recent health status">{Array.from({ length: 24 }, (_, index) => { const point = history.slice(-24)[index]; return <span key={index} className={`h-2 flex-1 rounded-sm ${point ? (point.status ? 'bg-white' : 'bg-neutral-600') : 'bg-neutral-800'}`} />; })}</div>
-        <p><span className="font-bold text-slate-500">Target:</span> {server.target_address || 'N/A'}</p>
-        <p><span className="font-bold text-slate-500">Role:</span> {server.server_role}</p>
-        <p><span className="font-bold text-slate-500">Connections:</span> {server.active_connections}</p>
-        {server.ssl_days_remaining !== null && server.ssl_days_remaining !== undefined && (
-          <p className="flex items-center space-x-1.5 pt-1">
-            <span className="font-bold text-slate-500">SSL Cert:</span>
-            <span className={`px-2 py-0.5 rounded font-mono font-medium ${
-              server.ssl_days_remaining <= 7
-                ? 'bg-red-950/80 text-red-300 border border-red-800'
-                : server.ssl_days_remaining <= 30
-                ? 'bg-amber-950/80 text-amber-300 border border-amber-800'
-                : 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
-            }`}>
-              🔒 {server.ssl_days_remaining}d left ({server.ssl_expiry_date ? new Date(server.ssl_expiry_date).toLocaleDateString() : ''})
-            </span>
-          </p>
-        )}
-      </div>
-
-      <div className="h-32 w-full mt-4 border-t border-slate-700 pt-4">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={history} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-            <XAxis 
-              dataKey="timestamp" 
-              type="number"
-              domain={[startTime, endTime]}
-              tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              stroke="#64748b" 
-              fontSize={11} 
-              tickMargin={8} 
-              minTickGap={15} 
-              tickCount={12}
-            />
-            <YAxis domain={[0, 1]} hide={true} />
-            
-            <Tooltip 
-              contentStyle={{ backgroundColor: '#1e293b', borderColor: '#475569', color: '#f8fafc', borderRadius: '0.5rem' }}
-              labelStyle={{ color: '#94a3b8', marginBottom: '4px', fontSize: '12px' }}
-              labelFormatter={(label, payload) => {
-                 if (payload && payload.length > 0) {
-                   return payload[0].payload.fullDate;
-                 }
-                 return label;
-              }}
-              formatter={(value, name, props) => [props.payload.statusText, 'Status']}
-            />
-            
-            <Line
-              type="stepAfter"
-              dataKey="onlineStatus"
-              stroke="var(--chart-line)"
-              strokeWidth={2} 
-              dot={false}
-              activeDot={{ r: 4, fill: '#22c55e', stroke: '#1e293b', strokeWidth: 2 }}
-              isAnimationActive={false}
-            />
-            <Line
-              type="stepAfter"
-              dataKey="offlineStatus"
-              stroke="var(--chart-line)"
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 4, fill: '#ef4444', stroke: '#1e293b', strokeWidth: 2 }}
-              isAnimationActive={false}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-      <button type="button" onClick={() => setDetailsOpen(true)} className="mt-4 w-full rounded-lg border border-neutral-600 px-3 py-2 text-sm font-semibold text-neutral-200 transition hover:border-white hover:bg-neutral-800">Inspect monitor</button>
-      {detailsOpen && <MonitorDetailsModal server={server} history={history} authFetch={authFetch} apiBase={apiBase} onClose={() => setDetailsOpen(false)} />}
-    </div>
-  );
-}
-
-function MonitorDetailsModal({ server, history, authFetch, apiBase, onClose }) {
-  const [detailHistory, setDetailHistory] = useState(history);
-  const [timeRange, setTimeRange] = useState('24h');
-  const type = (server.monitor_type || 'http').toLowerCase();
-  useEffect(() => {
-    authFetch(`${apiBase}/servers/${server.server_id}/history?time_range=${timeRange}`)
-      .then(res => res.json())
-      .then(data => Array.isArray(data) && setDetailHistory(data.map(point => ({ ...point, timestamp: new Date(point.timestamp).getTime(), fullDate: new Date(point.timestamp).toLocaleString() }))));
-  }, [server.server_id, apiBase, timeRange]);
-  const chartData = detailHistory.map(point => ({
-    ...point,
-    latency: point.telemetry?.response_time_ms ?? point.telemetry?.handshake_time_ms ?? point.telemetry?.latency_ms ?? null,
-    activity: point.status ? 1 : 0,
-  })).sort((a, b) => a.timestamp - b.timestamp);
-  const formatDetailXAxisTick = (value) => {
-    const date = new Date(value);
-    if (timeRange === '24h') {
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    if (timeRange === '30d') {
-      return date.toLocaleDateString([], { month: 'short', day: '2-digit' });
-    }
-    const dayKey = date.toDateString();
-    const pointsOnDay = chartData.filter(point => new Date(point.timestamp).toDateString() === dayKey).length;
-    return pointsOnDay > 1
-      ? date.toLocaleDateString([], { month: 'short', day: '2-digit' }) + ', ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : date.toLocaleDateString([], { month: 'short', day: '2-digit' });
-  };
-  const latest = chartData[chartData.length - 1];
-  const metrics = type === 'push'
-    ? [['Interval', `${server.heartbeat_interval_seconds || '-'} seconds`], ['Last heartbeat', server.last_heartbeat_at ? new Date(server.last_heartbeat_at).toLocaleString() : 'Never'], ['State', latest?.status ? 'On time' : 'Missed']]
-    : [['Target', server.target_address || 'N/A'], ['Port', server.port || 'Default'], ['Latest latency', latest?.latency != null ? `${latest.latency} ms` : 'Unavailable'], ...(type === 'dns' ? [['Resolved value', latest?.telemetry?.resolved_value || 'Unavailable']] : []), ...(server.ssl_days_remaining != null ? [['SSL expiry', `${server.ssl_days_remaining} days`]] : [])];
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-labelledby="monitor-details-title">
-      <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-neutral-700 bg-neutral-900 p-6 text-white shadow-2xl dark:bg-black">
-        <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-widest text-neutral-400">{type} monitor</p><h2 id="monitor-details-title" className="text-2xl font-bold">{server.hostname}</h2></div><button type="button" onClick={onClose} className="text-2xl text-neutral-400 hover:text-white" aria-label="Close">&times;</button></div>
-        <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">{metrics.map(([label, value]) => <div key={label} className="rounded-lg border border-neutral-700 bg-neutral-800 p-3"><p className="text-xs uppercase tracking-wide text-neutral-400">{label}</p><p className="mt-1 break-words text-sm font-bold text-white">{value}</p></div>)}</div>
-        <div className="mt-6 flex gap-2" role="tablist" aria-label="History time range">{['24h', '7d', '30d'].map(range => <button key={range} type="button" onClick={() => setTimeRange(range)} className={`rounded-lg border px-3 py-1.5 text-xs font-bold uppercase transition ${timeRange === range ? 'border-white bg-white text-black' : 'border-neutral-700 bg-neutral-800 text-neutral-300 hover:border-neutral-400'}`}>{range}</button>)}</div>
-        <div className="mt-3 h-72"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}><CartesianGrid strokeDasharray="3 3" stroke="var(--line)" /><XAxis dataKey="timestamp" type="number" domain={['dataMin', 'dataMax']} tickFormatter={formatDetailXAxisTick} tickMargin={12} minTickGap={30} tick={{ fontSize: 12, fill: '#888888' }} stroke="var(--muted)" /><YAxis width={70} tickMargin={10} tick={{ fontSize: 12, fill: '#888888' }} stroke="var(--muted)" tickFormatter={value => type === 'push' ? (value ? 'On time' : 'Missed') : `${value} ms`} /><Tooltip contentStyle={{ backgroundColor: 'var(--panel-bg)', borderColor: 'var(--line)', color: 'var(--ink)' }} labelFormatter={value => new Date(value).toLocaleString()} formatter={(value, name) => [type === 'push' ? (value ? 'On time' : 'Missed') : `${value ?? 'N/A'} ms`, type === 'push' ? 'Heartbeat' : 'Latency']} /><Line type={type === 'push' ? 'stepAfter' : 'monotone'} dataKey={type === 'push' ? 'activity' : 'latency'} stroke="var(--chart-line)" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>
-        <div className="mt-6"><h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-neutral-300">Recent events</h3><div className="divide-y divide-neutral-800 rounded-lg border border-neutral-700">{chartData.slice(-8).reverse().map((point, index) => <div key={`${point.timestamp}-${index}`} className="flex items-center justify-between px-3 py-2 text-sm"><span className={point.status ? 'text-neutral-200' : 'text-neutral-500'}>{point.status ? 'Online' : 'Offline'}</span><span className="text-neutral-400">{new Date(point.timestamp).toLocaleString()}</span></div>)}</div></div>
-        <div className="mt-6 flex justify-end"><button type="button" onClick={onClose} className="rounded-lg bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200">Close</button></div>
-      </div>
-    </div>
-  );
-}
-
-function Dashboard() {
-  const [servers, setServers] = useState([]);
-  const [hostname, setHostname] = useState("");
-  const [serverRole, setServerRole] = useState("");
-  const [targetAddress, setTargetAddress] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [isMonitorModalOpen, setIsMonitorModalOpen] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
-  const activeAlerts = servers.filter(server => !server.is_active);
-
-  const apiBase = getApiBase();
-  const { user, authFetch } = useAuth();
-  const currentHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
-  const installCmd = `curl -fsSL http://${currentHost}:8000/install.sh | bash -s http://${currentHost}:8000/agent/metric_agent.py`;
-
-  const fetchServers = () => {
-    authFetch(`${apiBase}/servers`)
-      .then(response => response.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setServers(data);
-        }
-      })
-      .catch(error => console.error(error));
-  };
-
-  useEffect(() => {
-    fetchServers();
-
-    let ws = null;
-    let reconnectTimer = null;
-    let isMounted = true;
-
-    const connectWs = () => {
-      if (!isMounted || !user) return;
-      try {
-        const wsUrl = getWsUrl();
-        ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-          if (isMounted) setWsConnected(true);
-        };
-
-        ws.onmessage = (event) => {
-          if (!isMounted) return;
-          try {
-            const data = JSON.parse(event.data);
-            if ((data.type === 'SERVERS_UPDATE' || data.type === 'INITIAL_STATE') && Array.isArray(data.servers)) {
-              setServers(data.servers);
-            }
-          } catch (err) {
-            console.error(err);
-          }
-        };
-
-        ws.onclose = () => {
-          if (isMounted) {
-            setWsConnected(false);
-            reconnectTimer = setTimeout(connectWs, 3000);
-          }
-        };
-
-        ws.onerror = () => {
-          if (ws) ws.close();
-        };
-      } catch {
-        if (isMounted) {
-          reconnectTimer = setTimeout(connectWs, 3000);
-        }
-      }
-    };
-
-    connectWs();
-
-    const fallbackInterval = setInterval(() => {
-      fetchServers();
-    }, 15000);
-
-    return () => {
-      isMounted = false;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      clearInterval(fallbackInterval);
-      if (ws) ws.close();
-    };
-  }, [apiBase, user]);
-
-  const handleAddServer = (e) => {
-    e.preventDefault();
-    const newServer = { hostname, server_role: serverRole, target_address: targetAddress };
-
-    authFetch(`${apiBase}/servers`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newServer),
-    })
-    .then(response => response.json())
-    .then(() => {
-      setHostname("");
-      setServerRole("");
-      setTargetAddress(""); 
-      fetchServers();
-    })
-    .catch(error => console.error(error));
-  };
-
-  const deleteServer = async (serverId) => {
-    setServers(prevServers => prevServers.filter(s => String(s.server_id) !== String(serverId)));
-    try {
-      const response = await authFetch(`${apiBase}/servers/${serverId}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) {
-        fetchServers();
-      }
-    } catch (error) {
-      console.error(error);
-      fetchServers();
-    }
-  };
-
-  const handleCopyCommand = () => {
-    navigator.clipboard.writeText(installCmd);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="max-w-7xl mx-auto space-y-8">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-          <h2 className="text-xl font-semibold mb-4 text-slate-200">Add New Monitor</h2>
-          <button type="button" onClick={() => setIsMonitorModalOpen(true)} className="w-full rounded-lg bg-white px-4 py-3 font-bold text-black transition hover:bg-neutral-200 dark:bg-white dark:text-black">
-            Configure Monitor
-          </button>
-          {/* Legacy fields remain available to existing callers through the modal API. */}
-          <form onSubmit={handleAddServer} className="hidden">
-            <div>
-              <label className="block text-slate-400 text-sm mb-1">Hostname</label>
-              <input 
-                type="text" value={hostname} onChange={(e) => setHostname(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:outline-none focus:border-blue-500" required
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 text-sm mb-1">Server Role</label>
-              <input 
-                type="text" value={serverRole} onChange={(e) => setServerRole(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:outline-none focus:border-blue-500" required
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 text-sm mb-1">Target Address (IP or URL)</label>
-              <input 
-                type="text" value={targetAddress} onChange={(e) => setTargetAddress(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:outline-none focus:border-blue-500" required
-              />
-            </div>
-            <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded w-full transition-colors">
-              Deploy Server
-            </button>
-          </form>
-        </div>
-
-        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg flex flex-col justify-between">
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <Database className="h-5 w-5 text-neutral-900 dark:text-neutral-100" />
           <div>
-            <div className="flex items-center space-x-2 mb-2">
-              <span className="text-xl">⚡</span>
-              <h2 className="text-xl font-semibold text-slate-200">One-Click Agent Deployment</h2>
-            </div>
-            <p className="text-slate-400 text-sm mb-4">
-              Run this automated command on your target Linux machine (Ubuntu, Debian, RHEL, CentOS) to install dependencies, configure systemd, and open port 8001.
-            </p>
-            <div className="bg-slate-950 border border-slate-700 rounded-lg p-3 relative group">
-              <pre className="text-xs md:text-sm text-green-400 font-mono overflow-x-auto whitespace-pre-wrap break-all pr-16 select-all">
-                {installCmd}
-              </pre>
-              <button
-                type="button"
-                onClick={handleCopyCommand}
-                className={`absolute top-2.5 right-2.5 px-3 py-1.5 rounded text-xs font-semibold transition-all ${
-                  copied ? "bg-green-600 text-white" : "bg-slate-700 hover:bg-slate-600 text-slate-200"
-                }`}
-              >
-                {copied ? "Copied!" : "Copy"}
-              </button>
-            </div>
-          </div>
-          <div className="mt-4 pt-4 border-t border-slate-700/60 flex items-center justify-between text-xs text-slate-400">
-            <span>Listens on TCP port <strong className="text-slate-200 font-mono">8001</strong></span>
-            <span>Root / Sudo Required</span>
+            <CardTitle className="text-base font-bold">Storage Lifecycle & Data Retention</CardTitle>
+            <CardDescription className="text-xs">
+              Automated 3-tier lifecycle: 30-day raw downsampling, 15-month hourly rollups, and auto-purge.
+            </CardDescription>
           </div>
         </div>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-slate-200">Monitored Infrastructure ({servers.length})</h2>
-        <div className="flex items-center space-x-2 text-xs font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full">
-          <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-          <span className={wsConnected ? 'text-emerald-400 font-semibold' : 'text-amber-400'}>
-            {wsConnected ? 'WebSocket Live' : 'Reconnecting...'}
-          </span>
-        </div>
-      </div>
-
-      <section className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <h3 className="text-xl font-semibold text-red-400 mb-4">Active Alerts</h3>
-        {activeAlerts.length === 0 ? (
-          <p className="rounded-lg border border-slate-700 bg-slate-900/50 px-4 py-4 text-center text-sm text-slate-400">All systems operational. No recent outages detected.</p>
-        ) : (
-          <div className="space-y-2">
-            {activeAlerts.map(server => (
-              <div key={server.server_id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-4 py-3 text-sm">
-                <span className="font-semibold text-red-300">🔴 {server.hostname}</span>
-                <span className="text-slate-400">{server.telemetry?.error || 'Monitor is offline'}</span>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            ['Hot Tier (Raw)', retentionStats ? retentionStats.raw_count.toLocaleString() : '...', 'Full granularity (<30d)'],
+            ['Warm Tier (Rollups)', retentionStats ? retentionStats.hourly_count.toLocaleString() : '...', 'Hourly averages (30d-15m)'],
+            ['Scheduled Cron', retentionStats ? retentionStats.next_schedule : '02:00 UTC', 'Automated maintenance'],
+            ['Hard Retention', '15 Months', 'Automated data purge'],
+          ].map(([label, value, hint]) => (
+            <div
+              key={label}
+              className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 bg-neutral-50/50 dark:bg-neutral-900/40"
+            >
+              <span className="text-[10px] uppercase font-mono tracking-wider text-neutral-500">
+                {label}
+              </span>
+              <div className="text-xl font-bold font-mono text-neutral-900 dark:text-neutral-100 mt-1">
+                {value}
               </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        {servers.map((server) => (
-          <ServerCard key={server.server_id} server={server} onDelete={deleteServer} />
-        ))}
-      </div>
-      {isMonitorModalOpen && <AddMonitorModal apiBase={apiBase} authFetch={authFetch} onClose={() => setIsMonitorModalOpen(false)} onCreated={() => fetchServers()} />}
-    </div>
-  );
-}
-
-function Analytics() {
-  const [servers, setServers] = useState([]);
-  const [selectedServer, setSelectedServer] = useState("");
-  const [matrix, setMatrix] = useState({ "24h": "0.00", "7d": "0.00", "14d": "0.00", "30d": "0.00" });
-  const [graphHours, setGraphHours] = useState(24);
-  const [graphData, setGraphData] = useState([]);
-  const [isCpuOpen, setIsCpuOpen] = useState(true);
-  const [isRamOpen, setIsRamOpen] = useState(true);
-
-  const apiBase = getApiBase();
-  const { authFetch } = useAuth();
-  const endTime = new Date().getTime();
-  const startTime = endTime - (graphHours * 3600000);
-
-  useEffect(() => {
-    authFetch(`${apiBase}/servers`)
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setServers(data);
-          if (data.length > 0) {
-            setSelectedServer(data[0].server_id);
-          }
-        }
-      })
-      .catch(err => console.error(err));
-      
-  }, [apiBase]);
-
-  useEffect(() => {
-    if (!selectedServer) return;
-
-    authFetch(`${apiBase}/servers/${selectedServer}/uptime`)
-      .then(res => res.json())
-      .then(data => setMatrix(data))
-      .catch(err => console.error(err));
-
-  }, [selectedServer, apiBase]);
-
-  useEffect(() => {
-    if (!selectedServer) return;
-
-    authFetch(`${apiBase}/servers/${selectedServer}/history?hours=${graphHours}`)
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setGraphData(formatHistoryData(data, startTime));
-        }
-      })
-      .catch(err => console.error(err));
-  }, [selectedServer, graphHours, apiBase]);
-
-  const latestMetrics = useMemo(() => {
-    if (!graphData || graphData.length === 0) return { cpu: null, ram: null };
-    for (let i = graphData.length - 1; i >= 0; i--) {
-      if (graphData[i].cpu_usage !== null || graphData[i].ram_usage !== null) {
-        return {
-          cpu: graphData[i].cpu_usage,
-          ram: graphData[i].ram_usage
-        };
-      }
-    }
-    return { cpu: null, ram: null };
-  }, [graphData]);
-
-  return (
-    <div className="max-w-7xl mx-auto space-y-8">
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <label className="block text-slate-400 text-sm mb-2">Select Target Server</label>
-        <select 
-          value={selectedServer} 
-          onChange={(e) => setSelectedServer(e.target.value)}
-          className="w-full md:w-1/3 bg-slate-900 border border-slate-600 rounded p-2 text-white focus:outline-none focus:border-blue-500"
-        >
-          {servers.map(s => (
-            <option key={s.server_id} value={s.server_id}>{s.hostname} ({s.target_address})</option>
+              <span className="text-[11px] text-neutral-400 block mt-1">{hint}</span>
+            </div>
           ))}
-        </select>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {Object.entries(matrix).map(([timeframe, percentage]) => (
-          <div key={timeframe} className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg flex flex-col items-center justify-center">
-            <span className="text-slate-400 text-sm uppercase tracking-wider mb-2">{timeframe} Uptime</span>
-            <span className={`text-3xl font-bold ${parseFloat(percentage) > 99 ? 'text-green-500' : parseFloat(percentage) > 95 ? 'text-yellow-500' : 'text-red-500'}`}>
-              {percentage}%
-            </span>
-          </div>
-        ))}
-      </div>
-
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-xl font-semibold text-slate-200">Historical Timeline</h3>
-          <div className="flex space-x-2">
-            {[
-              { label: '1H', value: 1 },
-              { label: '24H', value: 24 },
-              { label: '7D', value: 168 }
-            ].map(btn => (
-              <button
-                key={btn.label}
-                onClick={() => setGraphHours(btn.value)}
-                className={`px-3 py-1 rounded text-sm transition-colors ${
-                  graphHours === btn.value ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                }`}
-              >
-                {btn.label}
-              </button>
-            ))}
-          </div>
         </div>
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={graphData} margin={{ top: 5, right: 5, left: -20, bottom: 8 }}>
-              <XAxis 
-                dataKey="timestamp" 
-                type="number"
-                domain={[startTime, endTime]}
-                tickFormatter={(unixTime) => formatHistoryTick(unixTime, graphHours)}
-                stroke="#64748b" 
-                fontSize={11} 
-                tickMargin={8} 
-                minTickGap={15} 
-                tickCount={12}
-              />
-              <YAxis domain={[0, 1]} hide={true} />
-              
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#1e293b', borderColor: '#475569', color: '#f8fafc', borderRadius: '0.5rem' }}
-                labelStyle={{ color: '#94a3b8', marginBottom: '4px', fontSize: '12px' }}
-                labelFormatter={(label, payload) => {
-                   if (payload && payload.length > 0) {
-                     return payload[0].payload.fullDate;
-                   }
-                   return label;
-                }}
-                formatter={(value, name, props) => [props.payload.statusText, 'Status']}
-              />
-              
-              <Line
-                type="stepAfter"
-                dataKey="onlineStatus"
-                stroke="var(--chart-line)"
-                strokeWidth={2} 
-                dot={false}
-                isAnimationActive={false}
-              />
-              <Line
-                type="stepAfter"
-                dataKey="offlineStatus"
-                stroke="var(--chart-line)"
-                strokeWidth={2}
-                dot={false}
-                isAnimationActive={false}
-              />
-              <Brush
-                dataKey="timestamp"
-                height={22}
-                stroke="#64748b"
-                fill="#0f172a"
-                travellerWidth={10}
-                tickFormatter={(unixTime) => formatHistoryTick(unixTime, graphHours)}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center space-x-3">
-            <h3 className="text-xl font-semibold text-purple-400">CPU Performance</h3>
-            {latestMetrics.cpu !== null && (
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-900/60 text-purple-300 border border-purple-700">
-                {latestMetrics.cpu.toFixed(1)}% Current
-              </span>
-            )}
-          </div>
-          <button 
-            onClick={() => setIsCpuOpen(!isCpuOpen)}
-            className="px-3 py-1 rounded text-sm bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-          >
-            {isCpuOpen ? 'Collapse' : 'Expand'}
-          </button>
-        </div>
-        {isCpuOpen && (
-          <div className="h-64 w-full mt-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={graphData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#a855f7" stopOpacity={0.8}/>
-                    <stop offset="95%" stopColor="#a855f7" stopOpacity={0.1}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis 
-                  dataKey="timestamp" 
-                  type="number"
-                  domain={[startTime, endTime]}
-                  tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  stroke="#64748b" 
-                  fontSize={11} 
-                  tickMargin={8} 
-                  minTickGap={15} 
-                  tickCount={12}
-                />
-                <YAxis 
-                  domain={[0, 100]} 
-                  stroke="#64748b" 
-                  fontSize={11}
-                  tickFormatter={(val) => `${val}%`}
-                  width={45}
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#1e293b', borderColor: '#475569', color: '#f8fafc', borderRadius: '0.5rem' }}
-                  labelStyle={{ color: '#94a3b8', marginBottom: '4px', fontSize: '12px' }}
-                  labelFormatter={(label, payload) => {
-                    if (payload && payload.length > 0) {
-                      return payload[0].payload.fullDate;
-                    }
-                    return label;
-                  }}
-                  formatter={(value) => [value != null ? `${Number(value).toFixed(1)}%` : 'N/A', 'CPU Load']}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="cpu_usage" 
-                  stroke="#a855f7" 
-                  strokeWidth={2} 
-                  dot={false}
-                  connectNulls={true}
-                  activeDot={{ r: 5, fill: '#a855f7', stroke: '#1e293b', strokeWidth: 2 }}
-                  isAnimationActive={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center space-x-3">
-            <h3 className="text-xl font-semibold text-cyan-400">RAM Performance</h3>
-            {latestMetrics.ram !== null && (
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-900/60 text-cyan-300 border border-cyan-700">
-                {latestMetrics.ram.toFixed(1)}% Current
-              </span>
-            )}
-          </div>
-          <button 
-            onClick={() => setIsRamOpen(!isRamOpen)}
-            className="px-3 py-1 rounded text-sm bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-          >
-            {isRamOpen ? 'Collapse' : 'Expand'}
-          </button>
-        </div>
-        {isRamOpen && (
-          <div className="h-64 w-full mt-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={graphData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis 
-                  dataKey="timestamp" 
-                  type="number"
-                  domain={[startTime, endTime]}
-                  tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  stroke="#64748b" 
-                  fontSize={11} 
-                  tickMargin={8} 
-                  minTickGap={15} 
-                  tickCount={12}
-                />
-                <YAxis 
-                  domain={[0, 100]} 
-                  stroke="#64748b" 
-                  fontSize={11}
-                  tickFormatter={(val) => `${val}%`}
-                  width={45}
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#1e293b', borderColor: '#475569', color: '#f8fafc', borderRadius: '0.5rem' }}
-                  labelStyle={{ color: '#94a3b8', marginBottom: '4px', fontSize: '12px' }}
-                  labelFormatter={(label, payload) => {
-                    if (payload && payload.length > 0) {
-                      return payload[0].payload.fullDate;
-                    }
-                    return label;
-                  }}
-                  formatter={(value) => [value != null ? `${Number(value).toFixed(1)}%` : 'N/A', 'RAM Load']}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="ram_usage" 
-                  stroke="#06b6d4" 
-                  strokeWidth={2} 
-                  dot={false}
-                  connectNulls={true}
-                  activeDot={{ r: 5, fill: '#06b6d4', stroke: '#1e293b', strokeWidth: 2 }}
-                  isAnimationActive={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2108,100 +2448,138 @@ function Layout({ children }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const location = useLocation();
   const { user, logout } = useAuth();
-  const { isDark, isLoading: themeLoading, toggleTheme } = useTheme();
+  const { isDark, toggleTheme } = useTheme();
 
   const getPageTitle = () => {
-    if (location.pathname === "/analytics") return "System Analytics";
-    if (location.pathname === "/settings") return "Account Settings";
-    return "PulseWatch Dashboard";
+    if (location.pathname === '/analytics') return 'Analytics & Telemetry';
+    if (location.pathname === '/settings') return 'Settings & Dispatcher';
+    return 'Infrastructure Fleet';
   };
 
   return (
-    <div className="flex min-h-screen bg-white text-black dark:bg-black dark:text-white font-sans text-base overflow-hidden transition-colors duration-200">
-      <div 
-        className={`fixed inset-y-0 left-0 z-30 bg-slate-800 border-slate-700 transition-all duration-300 ease-in-out md:relative
-        ${isSidebarOpen ? "w-64 translate-x-0 border-r" : "w-64 -translate-x-full md:w-0 md:translate-x-0 md:border-r-0 md:overflow-hidden"}`}
+    <div className="flex min-h-screen bg-neutral-50 text-neutral-950 dark:bg-black dark:text-neutral-50 font-sans antialiased overflow-hidden">
+      <div
+        className={`fixed inset-y-0 left-0 z-40 bg-white border-neutral-200 dark:bg-neutral-950 dark:border-neutral-800 transition-all duration-300 ease-in-out md:relative ${
+          isSidebarOpen
+            ? 'w-64 translate-x-0 border-r shadow-lg md:shadow-none'
+            : 'w-64 -translate-x-full md:w-0 md:translate-x-0 md:border-r-0 md:overflow-hidden'
+        }`}
       >
-        <div className="w-64 h-full flex flex-col">
-          <div className="p-6 flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-black dark:text-white">PulseWatch</h1>
-            <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white text-2xl">
-              ✕
-            </button>
+        <div className="w-64 h-full flex flex-col justify-between p-4">
+          <div className="space-y-6">
+            <div className="flex items-center justify-between px-2 pt-2">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-lg bg-neutral-900 text-white dark:bg-neutral-50 dark:text-neutral-950 flex items-center justify-center font-bold">
+                  <Activity className="h-4 w-4 animate-pulse text-emerald-500" />
+                </div>
+                <span className="font-extrabold tracking-wider font-mono text-base">PULSEWATCH</span>
+              </div>
+              <button
+                onClick={() => setIsSidebarOpen(false)}
+                className="md:hidden text-neutral-400 hover:text-neutral-950 dark:hover:text-neutral-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <nav className="space-y-1">
+              <Link
+                to="/"
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                  location.pathname === '/'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 shadow-sm'
+                    : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-100'
+                }`}
+              >
+                <LayoutDashboard className="h-4 w-4" />
+                <span>Dashboard</span>
+              </Link>
+
+              <Link
+                to="/analytics"
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                  location.pathname === '/analytics'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 shadow-sm'
+                    : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-100'
+                }`}
+              >
+                <BarChart3 className="h-4 w-4" />
+                <span>Analytics</span>
+              </Link>
+
+              <Link
+                to="/settings"
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                  location.pathname === '/settings'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 shadow-sm'
+                    : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-100'
+                }`}
+              >
+                <SettingsIcon className="h-4 w-4" />
+                <span>Settings</span>
+              </Link>
+            </nav>
           </div>
-          <nav className="px-4 mt-6 space-y-2 flex-grow">
-            <Link 
-              to="/" 
-              className={`block px-4 py-3 rounded-lg transition-colors ${location.pathname === "/" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-700 hover:text-white"}`}
-            >
-              Dashboard
-            </Link>
-            <Link 
-              to="/analytics" 
-              className={`block px-4 py-3 rounded-lg transition-colors ${location.pathname === "/analytics" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-700 hover:text-white"}`}
-            >
-              Analytics
-            </Link>
-            <Link 
-              to="/settings" 
-              className={`block px-4 py-3 rounded-lg transition-colors ${location.pathname === "/settings" ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-700 hover:text-white"}`}
-            >
-              Settings
-            </Link>
-          </nav>
-          
+
           {user && (
-            <Link to="/settings" className="p-4 m-4 bg-slate-900/60 hover:bg-slate-900 rounded-xl border border-slate-700/60 transition-colors block">
-              <div className="text-xs text-slate-400 mb-1">Signed in as</div>
-              <div className="font-semibold text-blue-400 truncate">{user.username}</div>
-            </Link>
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-3 bg-neutral-50 dark:bg-neutral-900/50 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase font-mono font-medium text-neutral-400">
+                  Tenant
+                </span>
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              </div>
+              <div className="font-bold text-xs truncate">{user.username}</div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={logout}
+                className="w-full text-xs h-7 text-neutral-600 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400"
+              >
+                <LogOut className="h-3 w-3 mr-1.5" />
+                Sign Out
+              </Button>
+            </div>
           )}
         </div>
       </div>
 
       {isSidebarOpen && (
-        <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setIsSidebarOpen(false)}></div>
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
       )}
 
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
-        <header className="bg-slate-800/50 border-b border-slate-700 p-4 flex items-center justify-between sticky top-0 z-10">
-          <div className="flex items-center">
-            <button 
-              onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-              className="mr-4 text-slate-400 hover:text-white text-2xl transition-colors"
+        <header className="border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-950/80 backdrop-blur-md px-6 py-3.5 flex items-center justify-between sticky top-0 z-20">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="h-8 w-8"
+              aria-label="Toggle sidebar"
             >
-              ☰
-            </button>
-            <h2 className="text-xl font-semibold text-slate-200">{getPageTitle()}</h2>
+              <Menu className="h-4 w-4" />
+            </Button>
+            <h1 className="text-sm font-bold tracking-tight">{getPageTitle()}</h1>
           </div>
-          
-          <div className="flex items-center space-x-3">
-            <button
-              type="button"
+
+          <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              size="icon"
               onClick={toggleTheme}
-              disabled={themeLoading}
+              className="h-8 w-8"
               aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-              title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-neutral-300 bg-white text-black transition hover:bg-neutral-100 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-white dark:hover:bg-neutral-800"
             >
-              {themeLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-400 border-t-black dark:border-t-white" /> : <span aria-hidden="true">{isDark ? '☀' : '☾'}</span>}
-            </button>
-            {user && (
-              <Link to="/settings" className="hidden sm:inline-block text-xs bg-slate-900 hover:bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-full text-slate-300 transition-colors">
-                👤 <strong className="text-blue-400">{user.username}</strong>
-              </Link>
-            )}
-            <button
-              onClick={logout}
-              className="text-xs bg-red-950/60 hover:bg-red-600 border border-red-800/80 hover:border-red-500 text-red-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-semibold"
-              title="Sign Out"
-            >
-              Sign Out
-            </button>
+              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
           </div>
         </header>
-        
-        <main className="p-6 md:p-8">
+
+        <main className="p-6 md:p-8 flex-grow">
           {children}
         </main>
       </div>
@@ -2213,7 +2591,7 @@ function ProtectedApp() {
   const { user, sessionLoading } = useAuth();
 
   if (sessionLoading) {
-    return <AuthLoadingScreen />;
+    return <EkgLoadingScreen />;
   }
 
   if (!user) {
@@ -2229,32 +2607,6 @@ function ProtectedApp() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
-  );
-}
-
-function AuthLoadingScreen() {
-  return (
-    <main
-      className="min-h-screen bg-slate-950 flex items-center justify-center px-6 text-white font-sans text-base"
-      aria-live="polite"
-      aria-busy="true"
-      aria-label="Checking your session"
-    >
-      <div className="flex w-full max-w-sm flex-col items-center gap-7 text-center">
-        <div className="relative flex h-20 w-20 items-center justify-center">
-          <div className="absolute inset-0 rounded-2xl border border-blue-500/30 bg-blue-500/5 animate-pulse" />
-          <div className="absolute inset-1 rounded-2xl border-2 border-transparent border-t-blue-400 border-r-cyan-400 animate-spin" />
-          <div className="h-3 w-3 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.8)]" />
-        </div>
-        <div className="space-y-2">
-          <p className="text-xl font-bold tracking-tight text-white">PulseWatch</p>
-          <p className="text-sm text-slate-400">Checking your secure session<span className="inline-block w-8 text-left after:content-['...'] after:animate-pulse" /></p>
-        </div>
-        <div className="h-1 w-40 overflow-hidden rounded-full bg-slate-800" aria-hidden="true">
-          <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-blue-500 to-emerald-400 animate-[loading-bar_1.4s_ease-in-out_infinite]" />
-        </div>
-      </div>
-    </main>
   );
 }
 
